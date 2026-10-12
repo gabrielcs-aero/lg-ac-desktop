@@ -26,7 +26,19 @@ Changes show up instantly and are sent in the background, one at a time and in o
 
 ## Install
 
-You need Python 3.11+ and an air conditioner already added to the LG ThinQ phone app.
+You need an air conditioner already added to the LG ThinQ phone app.
+
+### Arch Linux / Manjaro
+
+```bash
+git clone https://github.com/gabrielcs-aero/lg-ac-desktop.git
+cd lg-ac-desktop/packaging/aur/lg-ac-desktop-git
+makepkg -si
+```
+
+That installs the app (find **LG AC Desktop** in your launcher), the `lg-ac-cli` command, and both panel widgets system-wide, so you can skip the widget install scripts below. Once the package is on the AUR, `yay -S lg-ac-desktop-git` will do the same.
+
+### Any distribution (Python 3.11+)
 
 ```bash
 git clone https://github.com/gabrielcs-aero/lg-ac-desktop.git
