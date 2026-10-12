@@ -64,16 +64,21 @@ class LiveUpdates:
         self.store_dir = store_dir
         self._client = None
         self._loop: asyncio.AbstractEventLoop | None = None
-        if client_factory is None:
-            from thinqconnect.mqtt_client import ThinQMQTTClient  # needs awscrt; imported only when used
-
-            client_factory = ThinQMQTTClient
         self._client_factory = client_factory
+
+    @staticmethod
+    def _default_factory():
+        # Needs the AWS IoT libraries; without them live updates are simply off.
+        from thinqconnect.mqtt_client import ThinQMQTTClient
+
+        return ThinQMQTTClient
 
     async def start(self) -> bool:
         """Connect and subscribe. Returns False (without raising) if live updates aren't available."""
         self._loop = asyncio.get_running_loop()
         try:
+            if self._client_factory is None:
+                self._client_factory = self._default_factory()
             self._client = await self._client_factory(
                 thinq_api=self.api,
                 client_id=self.client_id,
@@ -89,7 +94,7 @@ class LiveUpdates:
                     return False
             await self._subscribe_events()
             return True
-        except (ThinQAPIException, aiohttp.ClientError, OSError, RuntimeError) as error:
+        except (ImportError, ThinQAPIException, aiohttp.ClientError, OSError, RuntimeError) as error:
             _LOGGER.warning("Live updates unavailable: %s", error)
             return False
 

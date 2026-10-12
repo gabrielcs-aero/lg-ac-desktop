@@ -1,0 +1,111 @@
+# Maintainer: gabrielcs-aero <https://github.com/gabrielcs-aero>
+
+pkgname=lg-ac-desktop-git
+pkgver=0.3.0.r0.g0000000
+pkgrel=1
+pkgdesc="Control an LG ThinQ air conditioner from the desktop: app, KDE Plasma widget and GNOME Shell extension"
+arch=(x86_64 aarch64)
+url="https://github.com/gabrielcs-aero/lg-ac-desktop"
+# MIT for this project; Apache-2.0 for the bundled LG and AWS libraries.
+license=(MIT Apache-2.0)
+depends=(python pyside6 qt6-declarative qt6-svg python-aiohttp python-cryptography)
+makedepends=(git python-build python-installer python-setuptools python-wheel glib2)
+optdepends=('plasma-workspace: KDE Plasma panel widget'
+            'gnome-shell: GNOME Shell extension')
+provides=(lg-ac-desktop)
+conflicts=(lg-ac-desktop)
+
+# LG's ThinQ Connect SDK and the AWS IoT libraries it uses for live updates aren't packaged
+# for Arch, so they're bundled privately under /usr/lib/lg-ac-desktop.
+_thinqconnect=1.0.14
+_awsiotsdk=1.31.0
+_awscrt=0.36.1
+_pypi=https://files.pythonhosted.org/packages
+source=("$pkgname::git+$url.git"
+        "$_pypi/10/fd/89282cd414c43cf8e1fd3f6c9478c27c641f6f6270705c76f07fa3d72ade/thinqconnect-$_thinqconnect-py3-none-any.whl"
+        "$_pypi/4e/25/e2934e0146657391ad1b76acd09d03098a4ab547bc9a54820281c249c07c/awsiotsdk-$_awsiotsdk-py3-none-any.whl")
+source_x86_64=("$_pypi/98/9d/6746f592b3164b2cadb50d0be967eb1cb996a934f7351104868b9b027f5c/awscrt-$_awscrt-cp313-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl")
+source_aarch64=("$_pypi/11/5b/f9cd9140b72cb6140422bdd682aa004ac6e886be08ded42460164d377152/awscrt-$_awscrt-cp313-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl")
+noextract=("thinqconnect-$_thinqconnect-py3-none-any.whl"
+           "awsiotsdk-$_awsiotsdk-py3-none-any.whl"
+           "awscrt-$_awscrt-cp313-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl"
+           "awscrt-$_awscrt-cp313-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl")
+sha256sums=('SKIP'
+            '51a72ebfc8e7212bacf80ce40547e56e61d481625b752051f7f68aa7163d1a89'
+            'ccc13b06fae815de223558da0b3354dfa310393cf196197ce3b4744204ec161a')
+sha256sums_x86_64=('a681912cca49b70d9e3ff3c9968884eabbbbe2761b67d010e6e9f10a06918a03')
+sha256sums_aarch64=('e38c9556bbcd7a645522768c9401b1573c8ac9ffe8835e4db66b97ace00d081e')
+
+pkgver() {
+  cd "$pkgname"
+  local version
+  version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+  printf "%s.r%s.g%s" "$version" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+  cd "$pkgname"
+  python -m build --wheel --no-isolation
+}
+
+check() {
+  cd "$pkgname"
+  # Quick sanity check that doesn't need a display or the bundled libraries.
+  python -c 'import tomllib; tomllib.load(open("pyproject.toml", "rb"))'
+}
+
+package() {
+  cd "$pkgname"
+  local prefix=/usr/lib/lg-ac-desktop
+  local wheel
+  for wheel in dist/*.whl "$srcdir"/thinqconnect-*.whl "$srcdir"/awsiotsdk-*.whl "$srcdir"/awscrt-*.whl; do
+    python -m installer --destdir="$pkgdir" --prefix="$prefix" "$wheel"
+  done
+  rm -rf "$pkgdir$prefix/bin"   # replaced by the wrappers below
+
+  local site
+  site=$(python -c "import sysconfig; print(sysconfig.get_path('purelib', vars={'base': '$prefix', 'platbase': '$prefix'}))")
+  local cmd module
+  for cmd in lg-ac:lg_ac lg-ac-cli:lg_ac.cli; do
+    module=${cmd#*:}
+    install -Dm755 /dev/stdin "$pkgdir/usr/bin/${cmd%%:*}" <<WRAPPER
+#!/bin/sh
+export PYTHONPATH="$site\${PYTHONPATH:+:\$PYTHONPATH}"
+exec /usr/bin/python -m $module "\$@"
+WRAPPER
+  done
+
+  # Launcher entry and icon
+  install -Dm644 lg_ac/icons/lg-ac.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/lg-ac-desktop.svg"
+  install -Dm644 /dev/stdin "$pkgdir/usr/share/applications/lg-ac-desktop.desktop" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=LG AC Desktop
+Comment=Control your LG ThinQ air conditioner
+Exec=lg-ac
+Icon=lg-ac-desktop
+Categories=Utility;
+Keywords=air;conditioner;ac;lg;thinq;temperature;
+StartupWMClass=lg-ac-desktop
+DESKTOP
+
+  # KDE Plasma widget (its defaults already call lg-ac-cli / lg-ac from PATH)
+  local plasmoid="$pkgdir/usr/share/plasma/plasmoids/io.github.gabrielcs-aero.lgac"
+  install -d "$plasmoid"
+  cp -r widgets/kde/package/. "$plasmoid/"
+  install -Dm644 -t "$plasmoid/contents/icons" lg_ac/icons/*.svg
+
+  # GNOME Shell extension
+  local uuid=lg-ac@gabrielcs-aero.github.io
+  local extension="$pkgdir/usr/share/gnome-shell/extensions/$uuid"
+  install -d "$extension/icons"
+  cp -r "widgets/gnome/$uuid/." "$extension/"
+  local icon
+  for icon in lg_ac/icons/*.svg; do
+    [[ $(basename "$icon") == lg-ac.svg ]] && continue
+    install -Dm644 "$icon" "$extension/icons/$(basename "$icon" .svg)-symbolic.svg"
+  done
+  glib-compile-schemas "$extension/schemas"
+
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

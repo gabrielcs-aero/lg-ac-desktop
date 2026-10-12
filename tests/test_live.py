@@ -109,6 +109,15 @@ class LiveUpdatesTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.reports, [{"display": {"light": "OFF"}}])
 
 
+    async def test_missing_aws_library_means_no_live_updates(self):
+        live = LiveUpdates(self.session, "token", "BR", "client", "d1", self.reports.append, self.store)
+
+        def missing():
+            raise ImportError("No module named 'awscrt'")
+        live._default_factory = missing
+        self.assertFalse(await live.start())
+
+
 class ApplyReportTest(unittest.IsolatedAsyncioTestCase):
     async def test_partial_report_merges_into_state(self):
         controller = AcController(DemoApi())
