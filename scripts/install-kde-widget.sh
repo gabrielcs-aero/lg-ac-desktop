@@ -28,6 +28,10 @@ sed -i \
     -e "s|<default>lg-ac</default>|<default>$bin/lg-ac</default>|" \
     "$build/contents/config/main.xml"
 
+# shellcheck source=scripts/_install-icon.sh
+source "$repo/scripts/_install-icon.sh"
+install_app_icon "$repo" "$bin/python"
+
 if kpackagetool6 -t Plasma/Applet -s "$id" >/dev/null 2>&1; then
     kpackagetool6 -t Plasma/Applet -u "$build"
 else

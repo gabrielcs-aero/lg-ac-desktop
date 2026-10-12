@@ -1,3 +1,5 @@
+<img src="lg_ac/icons/lg-ac.svg" width="96" align="right" alt="">
+
 # LG AC Desktop
 
 Control an LG ThinQ air conditioner from your Linux desktop: power, mode, target temperature and fan speed. It comes in three forms:

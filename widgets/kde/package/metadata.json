@@ -3,7 +3,7 @@
         "Authors": [{ "Name": "Gabriel" }],
         "Category": "System Information",
         "Description": "Control an LG ThinQ air conditioner from the panel",
-        "Icon": "temperature-cold",
+        "Icon": "lg-ac-desktop",
         "Id": "io.github.gabrielcs-aero.lgac",
         "License": "MIT",
         "Name": "LG Air Conditioner",
