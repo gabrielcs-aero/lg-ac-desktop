@@ -34,9 +34,51 @@ export class AcBackend {
         this._statusRunning = false;
         this._timers = new Map();
         this._cancellable = new Gio.Cancellable();
+        this.live = false; // LG is pushing changes to us (via `lg-ac-cli watch`)
+        this._watching = false;
+        this._watchProc = null;
+    }
+
+    /** Start long-polling for changes pushed by LG; restarts itself after each one. */
+    startWatching() {
+        this._watching = true;
+        this._watch();
+    }
+
+    async _watch() {
+        if (!this._watching || this._watchProc)
+            return;
+        let result;
+        try {
+            this._watchProc = Gio.Subprocess.new([...this.argv, 'watch', '--timeout', '540'],
+                Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE);
+            const [stdout] = await this._watchProc.communicate_utf8_async(null, this._cancellable);
+            result = JSON.parse(stdout);
+        } catch {
+            result = {ok: false};
+        } finally {
+            this._watchProc = null;
+        }
+        if (!this._watching)
+            return;
+        this.live = result.ok === true;
+        if (!result.ok) {
+            this._changed();
+            this._setTimer('watch-retry', 5 * 60 * 1000, () => this._watch());
+            return;
+        }
+        if (result.changed && this._pending === 0 && this.pendingTarget === null) {
+            this.state = result.state;
+            if (!this.errorShown)
+                this.message = 'Up to date';
+        }
+        this._changed();
+        this._watch();
     }
 
     destroy() {
+        this._watching = false;
+        this._watchProc?.force_exit();
         this._cancellable.cancel();
         for (const id of this._timers.values())
             GLib.source_remove(id);

@@ -17,14 +17,16 @@ from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuickControls2 import QQuickStyle
 from thinqconnect import ThinQApi
 
-from .config import Config, load_config, save_config
+from .config import Config, cache_dir, load_config, save_config
 from .controller import AcController, AcState, DeviceInfo
 from .demo import DemoApi
+from .live import LiveUpdates, live_client_id
 from .presets import get_preset, plan, presets_for
 from .text import describe_error, pretty
 
 HERE = Path(__file__).resolve().parent
 POLL_INTERVAL_MS = 60_000
+LIVE_POLL_INTERVAL_MS = 5 * 60_000  # safety net while LG pushes changes to us
 TEMPERATURE_SEND_DELAY_MS = 700
 # How long after the last command to read the unit back, giving it time to apply the change.
 SETTLE_MS = 4_000
@@ -93,6 +95,8 @@ class AcModel(QObject):
     """
 
     changed = Signal()
+    _liveState = Signal(object)  # AcState pushed by LG, delivered on the Qt thread
+    _liveConnection = Signal(bool)
 
     def __init__(self, runner: AsyncRunner, config: Config, demo: bool = False):
         super().__init__()
@@ -110,6 +114,10 @@ class AcModel(QObject):
         self._message = ""
         self._error_shown = False
         self._needs_setup = False
+        self.live: LiveUpdates | None = None
+        self._live_connected = False
+        self._liveState.connect(self._on_live_state)
+        self._liveConnection.connect(self._on_live_connection)
 
         self.poll_timer = QTimer(self, interval=POLL_INTERVAL_MS, timeout=self.refresh)
         self.temp_timer = QTimer(self, singleShot=True, interval=TEMPERATURE_SEND_DELAY_MS, timeout=self._send_target)
@@ -147,6 +155,10 @@ class AcModel(QObject):
     @Property(bool, notify=changed)
     def needsSetup(self) -> bool:
         return self._needs_setup
+
+    @Property(bool, notify=changed)
+    def isLive(self) -> bool:
+        return self._live_connected
 
     @Property(bool, notify=changed)
     def isDemo(self) -> bool:
@@ -206,6 +218,7 @@ class AcModel(QObject):
 
     def connect_api(self) -> None:
         self.poll_timer.stop()
+        self._live_connected = False
         self.state = None
         self._set_message("Connecting to LG ThinQ…")
         self.runner.submit(self._open_api(), self._devices_loaded, self._show_error)
@@ -243,6 +256,43 @@ class AcModel(QObject):
         self.state = state
         self._set_message("Up to date")
         self.poll_timer.start()
+        if not self.demo:
+            self.runner.submit(self._start_live(), None, lambda error: None)
+
+    # ---------- live updates ----------
+
+    async def _start_live(self) -> None:
+        if self.live is not None:
+            await self.live.stop()
+        controller = self.controller
+        self.live = LiveUpdates(
+            self.session,
+            self.config.access_token,
+            self.config.country_code,
+            live_client_id(self.config.client_id, "app"),
+            self.device.device_id,
+            # Runs on the asyncio loop, like every other controller call.
+            on_report=lambda report: self._liveState.emit(controller.apply_report(report)),
+            store_dir=cache_dir() / "mqtt-app",
+            on_connection_change=self._liveConnection.emit,
+        )
+        self._liveConnection.emit(await self.live.start() and self.live.connected)
+
+    def _on_live_state(self, state: AcState) -> None:
+        if self.in_flight or self.pending_target is not None:
+            return  # a change of ours is on its way; the read-back after it will catch up
+        self.state = state
+        if not self._error_shown:
+            self._set_message("Up to date")
+        else:
+            self.changed.emit()
+
+    def _on_live_connection(self, connected: bool) -> None:
+        if connected == self._live_connected:
+            return
+        self._live_connected = connected
+        self.poll_timer.setInterval(LIVE_POLL_INTERVAL_MS if connected else POLL_INTERVAL_MS)
+        self.changed.emit()
 
     # ---------- commands ----------
 
@@ -368,6 +418,11 @@ class AcModel(QObject):
 
     def close(self) -> None:
         self.poll_timer.stop()
+        if self.live:
+            try:
+                self.runner.run_sync(self.live.stop(), timeout=6)
+            except Exception:
+                pass
         if self.session:
             try:
                 self.runner.run_sync(self.session.close())

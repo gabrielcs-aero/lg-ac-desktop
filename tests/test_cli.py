@@ -69,6 +69,25 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("Unknown preset", out["error"])
 
+    def test_demo_watch_sees_changes_from_other_commands(self):
+        import threading
+        run_cli("--demo", "status")  # create the demo state
+        result = {}
+        watcher = threading.Thread(target=lambda: result.update(out=run_cli("--demo", "watch", "--timeout", "10")))
+        watcher.start()
+        import time
+        time.sleep(1.5)
+        run_cli("--demo", "swing", "on")
+        watcher.join(15)
+        code, out = result["out"]
+        self.assertEqual(code, 0)
+        self.assertTrue(out["changed"])
+        self.assertTrue(out["state"]["swing"])
+
+    def test_demo_watch_times_out_quietly(self):
+        code, out = run_cli("--demo", "watch", "--timeout", "0.5")
+        self.assertEqual((code, out["ok"], out["changed"]), (0, True, False))
+
     def test_invalid_value_is_reported_as_json(self):
         code, out = run_cli("--demo", "fan", "TURBO")
         self.assertEqual(code, 1)

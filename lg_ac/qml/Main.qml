@@ -101,6 +101,31 @@ ApplicationWindow {
                                 implicitHeight: demoLabel.implicitHeight + 4
                                 Label { id: demoLabel; anchors.centerIn: parent; text: "Demo"; color: t.muted; font.pixelSize: 11 }
                             }
+                            Rectangle {
+                                visible: acModel.isLive
+                                radius: 6
+                                color: Qt.rgba(0.06, 0.73, 0.51, 0.15)
+                                implicitWidth: liveRow.implicitWidth + 12
+                                implicitHeight: liveRow.implicitHeight + 4
+                                ToolTip.visible: liveHover.hovered
+                                ToolTip.text: "Changes made with the remote or the ThinQ app show up here right away."
+                                HoverHandler { id: liveHover }
+                                RowLayout {
+                                    id: liveRow
+                                    anchors.centerIn: parent
+                                    spacing: 5
+                                    Rectangle {
+                                        width: 6; height: 6; radius: 3
+                                        color: "#10b981"
+                                        SequentialAnimation on opacity {
+                                            loops: Animation.Infinite
+                                            NumberAnimation { to: 0.35; duration: 1200; easing.type: Easing.InOutSine }
+                                            NumberAnimation { to: 1; duration: 1200; easing.type: Easing.InOutSine }
+                                        }
+                                    }
+                                    Label { text: "Live"; color: "#10b981"; font.pixelSize: 11; font.weight: Font.DemiBold }
+                                }
+                            }
                         }
                         Label {
                             text: ready ? "Room " + win.fmt(ac.current_temp) + "°" + ac.unit : " "

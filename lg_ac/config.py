@@ -14,6 +14,11 @@ def default_config_path() -> Path:
     return Path(base) / "lg-ac-desktop" / "config.json"
 
 
+def cache_dir() -> Path:
+    base = os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache"
+    return Path(base) / "lg-ac-desktop"
+
+
 @dataclass
 class Config:
     access_token: str = ""
