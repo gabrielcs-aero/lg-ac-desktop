@@ -42,7 +42,7 @@ To try the app without a token or an air conditioner, run it against a simulated
 ## How it works
 
 - `lg_ac/controller.py` lists your air conditioners, loads the unit's profile and status, and sends commands. Each command is validated against the profile before it's sent, so the app never sends a value your unit doesn't support.
-- `lg_ac/app.py` is the PySide6 (Qt) window. Network calls run on a background asyncio loop so the window never freezes. Clicking **+**/**−** several times in a row sends a single temperature command once you stop clicking. Status refreshes every 60 seconds and whenever you press **Refresh**.
+- `lg_ac/app.py` is the PySide6 (Qt) window. Changes show up instantly and are sent in the background, one at a time and in order. A few seconds after your last change, the window reads the unit back to confirm, and it undoes anything LG rejected. Clicking **+**/**−** several times in a row sends a single temperature command once you stop clicking. Status refreshes every 60 seconds and whenever you press **Refresh**.
 - Settings are stored in `~/.config/lg-ac-desktop/config.json`, readable only by your user (permissions `600`). The token never goes anywhere except LG's API.
 
 ## Tests

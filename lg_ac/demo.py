@@ -3,6 +3,7 @@
 Responses follow the ThinQ Connect API format; the values are made up.
 """
 
+import asyncio
 import copy
 
 DEVICE_LIST = [
@@ -73,9 +74,16 @@ STATUS = {
 class DemoApi:
     """Stands in for ThinQApi: serves the sample data and applies commands to it."""
 
-    def __init__(self):
+    def __init__(self, latency: float = 0):
         self.status = copy.deepcopy(STATUS)
         self.commands = []
+        self.latency = latency  # seconds each request takes, like a trip to LG's cloud
+        self.delays: list[float] = []  # per-command overrides, consumed in order
+
+    async def _wait(self, delay=None):
+        delay = self.latency if delay is None else delay
+        if delay:
+            await asyncio.sleep(delay)
 
     async def async_get_device_list(self):
         return copy.deepcopy(DEVICE_LIST)
@@ -84,9 +92,11 @@ class DemoApi:
         return copy.deepcopy(PROFILE)
 
     async def async_get_device_status(self, device_id):
+        await self._wait()
         return copy.deepcopy(self.status)
 
     async def async_post_device_control(self, device_id, payload):
+        await self._wait(self.delays.pop(0) if self.delays else None)
         payload = {resource: dict(values) for resource, values in payload.items()}
         self.commands.append(payload)
         for resource, values in payload.items():

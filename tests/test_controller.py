@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 
 from lg_ac.controller import AcController
@@ -39,17 +40,44 @@ class ControllerTest(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_set_target_temperature_in_cool_mode(self):
-        state = await self.controller.set_target_temperature(24.5)
+        await self.controller.set_target_temperature(24.5)
         self.assertEqual(self.api.commands, [{"temperatureInUnits": {"coolTargetTemperature": 24.5, "unit": "C"}}])
-        self.assertEqual(state.target_temp, 24.5)
+        self.assertEqual((await self.controller.refresh()).target_temp, 24.5)
 
     async def test_set_target_temperature_in_auto_mode(self):
         await self.controller.set_mode("AUTO")
+        await self.controller.refresh()
         await self.controller.set_target_temperature(23)
         self.assertEqual(self.api.commands[-1], {"temperatureInUnits": {"autoTargetTemperature": 23, "unit": "C"}})
 
+    async def test_temperature_for_a_mode_not_yet_read_back(self):
+        # The window sends a new mode and then a temperature before refreshing in between.
+        await self.controller.set_mode("AUTO")
+        await self.controller.set_target_temperature(23, mode="AUTO")
+        self.assertEqual(self.api.commands[-1], {"temperatureInUnits": {"autoTargetTemperature": 23, "unit": "C"}})
+
+    async def test_temp_modes(self):
+        self.assertEqual(self.state.temp_modes, ("COOL", "AUTO"))
+
+    async def test_commands_are_sent_in_order(self):
+        self.api.delays = [0.05, 0, 0]  # the first request is slow; later ones must still wait for it
+        await asyncio.gather(
+            self.controller.set_power(False),
+            self.controller.set_power(True),
+            self.controller.set_fan_speed("HIGH"),
+        )
+        self.assertEqual(
+            self.api.commands,
+            [
+                {"operation": {"airConOperationMode": "POWER_OFF"}},
+                {"operation": {"airConOperationMode": "POWER_ON"}},
+                {"airFlow": {"windStrength": "HIGH"}},
+            ],
+        )
+
     async def test_no_setpoint_in_fan_mode(self):
-        state = await self.controller.set_mode("FAN")
+        await self.controller.set_mode("FAN")
+        state = await self.controller.refresh()
         self.assertFalse(state.can_set_temp)
         self.assertEqual(state.target_temp, 22)  # still shown, just not adjustable
         with self.assertRaises(ValueError):
@@ -70,10 +98,10 @@ class ControllerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.api.commands, [])
 
     async def test_state_follows_commands(self):
-        state = await self.controller.set_target_temperature(20)
-        self.assertEqual(state.target_temp, 20)
-        state = await self.controller.set_power(False)
-        self.assertFalse(state.power)
+        await self.controller.set_target_temperature(20)
+        self.assertEqual((await self.controller.refresh()).target_temp, 20)
+        await self.controller.set_power(False)
+        self.assertFalse((await self.controller.refresh()).power)
 
     async def test_refresh_picks_up_changes(self):
         self.api.status["operation"]["airConOperationMode"] = "POWER_OFF"
