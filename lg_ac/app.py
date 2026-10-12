@@ -403,7 +403,7 @@ class MainWindow(QMainWindow):
         self.current_label.setText(f"Room: {state.current_temp:g}{unit}" if state.current_temp is not None else "Room: —")
         if self.pending_target is None:
             self.target_label.setText(f"{state.target_temp:g}{unit}" if state.target_temp is not None else "—")
-        has_target = state.target_temp is not None and bool(state.power)
+        has_target = state.can_set_temp and state.target_temp is not None and bool(state.power)
         self.down_button.setEnabled(has_target)
         self.up_button.setEnabled(has_target)
 
@@ -448,6 +448,9 @@ class MainWindow(QMainWindow):
         self._check_value(self.fan_group, state.fan_speed)
         if state.target_temp is not None:
             self.target_label.setText(f"{state.target_temp:g}°{state.unit}")
+        has_target = state.can_set_temp and state.target_temp is not None and bool(state.power)
+        self.down_button.setEnabled(has_target)
+        self.up_button.setEnabled(has_target)
 
     def status(self, text: str) -> None:
         self.status_label.setText(text)

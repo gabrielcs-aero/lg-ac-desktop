@@ -33,6 +33,7 @@ class AcState:
     temp_min: float | None = None
     temp_max: float | None = None
     temp_step: float = 1
+    can_set_temp: bool = False
     unit: str = "C"
     fan_speed: str | None = None
     fan_speeds: list[str] = field(default_factory=list)
@@ -81,18 +82,19 @@ class AcController:
     def state(self) -> AcState:
         device = self._require_device()
         unit = self._unit
-        target_prop = self._target_temperature_prop()
-        limits = self._writable_values(target_prop) if target_prop else None
+        write_prop = self._target_temperature_prop()
+        limits = self._writable_values(write_prop) if write_prop else None
         power = device.get_status(P.AIR_CON_OPERATION_MODE)
         return AcState(
             power=None if power is None else power == POWER_ON,
             mode=device.get_status(P.CURRENT_JOB_MODE),
             modes=list(self._writable_values(P.CURRENT_JOB_MODE) or []),
             current_temp=device.get_status(getattr(P, f"CURRENT_TEMPERATURE_{unit}")),
-            target_temp=device.get_status(target_prop) if target_prop else None,
+            target_temp=self._read_target_temperature(),
             temp_min=limits.get("min") if isinstance(limits, dict) else None,
             temp_max=limits.get("max") if isinstance(limits, dict) else None,
             temp_step=limits.get("step", 1) if isinstance(limits, dict) else 1,
+            can_set_temp=write_prop is not None,
             unit=unit,
             fan_speed=device.get_status(P.WIND_STRENGTH),
             fan_speeds=list(self._writable_values(P.WIND_STRENGTH) or []),
@@ -126,14 +128,26 @@ class AcController:
             raise RuntimeError("No air conditioner connected yet.")
         return self._device
 
-    def _target_temperature_prop(self) -> str | None:
-        """Pick the writable target-temperature property for the current mode and unit."""
-        device = self._require_device()
+    def _target_temperature_candidates(self) -> list[str]:
+        """Target-temperature properties for the current mode and unit, most specific first."""
         candidates = [getattr(P, f"TARGET_TEMPERATURE_{self._unit}")]
-        prefix = _MODE_TARGET_PREFIX.get(device.get_status(P.CURRENT_JOB_MODE) or "")
+        prefix = _MODE_TARGET_PREFIX.get(self._require_device().get_status(P.CURRENT_JOB_MODE) or "")
         if prefix:
             candidates.insert(0, getattr(P, f"{prefix}_TARGET_TEMPERATURE_{self._unit}"))
-        return next((p for p in candidates if self._writable(p)), None)
+        return candidates
+
+    def _target_temperature_prop(self) -> str | None:
+        """The property to write a new target temperature to."""
+        return next((p for p in self._target_temperature_candidates() if self._writable(p)), None)
+
+    def _read_target_temperature(self) -> float | None:
+        # Some units (e.g. S3NQ09AM31A) take the setpoint through a write-only property such as
+        # coolTargetTemperature and only report it back through the generic targetTemperature.
+        device = self._require_device()
+        for prop in self._target_temperature_candidates():
+            if self._readable(prop) and (value := device.get_status(prop)) is not None:
+                return value
+        return None
 
     def _readable(self, prop: str) -> bool:
         try:

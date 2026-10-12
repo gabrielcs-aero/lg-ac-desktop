@@ -31,29 +31,31 @@ def _enum(values, mode=("r", "w")):
     return {"type": "enum", "mode": list(mode), "value": {m: list(values) for m in mode}}
 
 
-def _range(lo, hi, step=1):
-    rng = {"min": lo, "max": hi, "step": step}
-    return {"type": "range", "mode": ["r", "w"], "value": {"r": rng, "w": rng}}
+def _write_only_range(lo, hi, step):
+    return {"type": "range", "mode": ["w"], "value": {"w": {"min": lo, "max": hi, "step": step}}}
+
+
+def _temperatures(unit, lo, hi, step):
+    # Mirrors the S3NQ09AM31A: the setpoint is written per mode (cool/auto) but only read back
+    # through the generic, read-only targetTemperature.
+    return {
+        "unit": unit,
+        "currentTemperature": {"type": "number", "mode": ["r"]},
+        "targetTemperature": {"type": "number", "mode": ["r"]},
+        "minTargetTemperature": {"type": "number", "mode": ["r"]},
+        "maxTargetTemperature": {"type": "number", "mode": ["r"]},
+        "coolTargetTemperature": _write_only_range(lo, hi, step),
+        "autoTargetTemperature": _write_only_range(lo, hi, step),
+    }
 
 
 PROFILE = {
     "notification": {"push": []},
     "property": {
-        "airConJobMode": {"currentJobMode": _enum(["COOL", "AIR_DRY", "FAN"])},
+        "airConJobMode": {"currentJobMode": _enum(["COOL", "AIR_DRY", "FAN", "AUTO"])},
         "operation": {"airConOperationMode": _enum(["POWER_ON", "POWER_OFF"])},
-        "temperatureInUnits": [
-            {
-                "unit": "C",
-                "currentTemperature": {"type": "number", "mode": ["r"]},
-                "targetTemperature": _range(18, 30),
-            },
-            {
-                "unit": "F",
-                "currentTemperature": {"type": "number", "mode": ["r"]},
-                "targetTemperature": _range(64, 86),
-            },
-        ],
-        "airFlow": {"windStrength": _enum(["LOW", "MID", "HIGH", "AUTO"])},
+        "temperatureInUnits": [_temperatures("C", 18, 30, 0.5), _temperatures("F", 64, 86, 1)],
+        "airFlow": {"windStrength": _enum(["NATURE", "LOW", "LOW_MID", "MID", "MID_HIGH", "HIGH"])},
     },
 }
 
@@ -61,8 +63,8 @@ STATUS = {
     "airConJobMode": {"currentJobMode": "COOL"},
     "operation": {"airConOperationMode": "POWER_ON"},
     "temperatureInUnits": [
-        {"currentTemperature": 26, "targetTemperature": 22, "unit": "C"},
-        {"currentTemperature": 79, "targetTemperature": 72, "unit": "F"},
+        {"currentTemperature": 26, "targetTemperature": 22, "minTargetTemperature": 18, "maxTargetTemperature": 30, "unit": "C"},
+        {"currentTemperature": 79, "targetTemperature": 72, "minTargetTemperature": 64, "maxTargetTemperature": 86, "unit": "F"},
     ],
     "airFlow": {"windStrength": "MID"},
 }
@@ -91,7 +93,9 @@ class DemoApi:
             if resource == "temperatureInUnits":
                 for entry in self.status[resource]:
                     if entry["unit"] == values.get("unit"):
-                        entry.update({k: v for k, v in values.items() if k != "unit"})
+                        for key, value in values.items():
+                            if key.endswith("argetTemperature"):  # cool/auto setpoints read back as the target
+                                entry["targetTemperature"] = value
             else:
                 self.status.setdefault(resource, {}).update(values)
         return {}
