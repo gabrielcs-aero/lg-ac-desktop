@@ -28,6 +28,22 @@ PlasmoidItem {
     property bool commandRunning: false
     property bool statusRunning: false
     property var jobs: ({})
+    property bool timerPanelOpen: false
+
+    readonly property var timerVerbs: ({ stop: i18n("Off in"), start: i18n("On in"), sleep: i18n("Sleep, off in") })
+    readonly property var activeTimers: ready ? ["stop", "sleep", "start"].filter(k => acState["timer_" + k] !== null && acState["timer_" + k] !== undefined) : []
+    readonly property var presetTints: ({ sleep: "#8b5cf6", max_cool: "#3b82f6", eco: "#10b981" })
+    function duration(minutes) {
+        const h = Math.floor(minutes / 60), m = minutes % 60
+        return h && m ? i18n("%1 h %2 min", h, m) : h ? i18n("%1 h", h) : i18n("%1 min", m)
+    }
+    function timerText(kind) {
+        const m = acState["timer_" + kind]
+        return timerVerbs[kind] + (m > 0 ? " " + duration(m) : "")
+    }
+    function presetActive(preset) {
+        return Object.keys(preset.changes).filter(k => k.indexOf("timer_") !== 0 && k !== "can_set_temp").length === 0
+    }
 
     readonly property bool ready: acState !== null
     readonly property bool isOn: ready && acState.power === true
@@ -141,6 +157,18 @@ PlasmoidItem {
         send("mode", ["mode", mode], { mode: mode, can_set_temp: acState.temp_modes.indexOf(mode) >= 0 })
     }
     function setFan(speed) { if (ready && speed !== acState.fan_speed) send("fan", ["fan", speed], { fan_speed: speed }) }
+    function setToggle(command, field, on) {
+        if (ready && acState[field] !== on) send(command, [command, on ? "on" : "off"], { [field]: on })
+    }
+    function setTimer(kind, minutes) {
+        send("timer-" + kind, ["timer", kind, minutes], { ["timer_" + kind]: minutes || null })
+    }
+    function applyPreset(preset) {
+        if (!ready || Object.keys(preset.changes).length === 0) return
+        pendingTarget = NaN
+        tempTimer.stop()
+        send("preset", ["preset", preset.id], preset.changes)
+    }
     function nudge(direction) {
         if (!canSetTemp) return
         let value = shownTarget + direction * acState.temp_step
@@ -260,6 +288,13 @@ PlasmoidItem {
             spacing: Kirigami.Units.largeSpacing
             visible: root.ready
 
+            Kirigami.InlineMessage {
+                Layout.fillWidth: true
+                visible: root.ready && root.acState.error === true
+                type: Kirigami.MessageType.Error
+                text: i18n("The unit reports a fault. Check it, or look in the ThinQ app for details.")
+            }
+
             // Temperature dial with −/+ on either side
             RowLayout {
                 Layout.fillWidth: true
@@ -324,6 +359,21 @@ PlasmoidItem {
                 Item { Layout.fillWidth: true }
             }
 
+            // Presets
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Kirigami.Units.smallSpacing
+                Repeater {
+                    model: root.ready ? root.acState.presets : []
+                    delegate: PresetPill {
+                        required property var modelData
+                        preset: modelData
+                        Layout.fillWidth: true
+                        Layout.preferredWidth: 1
+                    }
+                }
+            }
+
             // Modes
             GridLayout {
                 Layout.fillWidth: true
@@ -374,6 +424,106 @@ PlasmoidItem {
                 }
             }
 
+            // Swing, power save, display, timer
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Kirigami.Units.smallSpacing
+                RoundToggle {
+                    iconName: "swing"; text: i18n("Swing"); tint: "#0ea5e9"
+                    visible: root.ready && root.acState.can_swing
+                    on: root.ready && root.acState.swing === true
+                    enabled: root.isOn
+                    onClicked: root.setToggle("swing", "swing", !on)
+                }
+                RoundToggle {
+                    iconName: "power-save"; text: i18n("Power save"); tint: "#10b981"
+                    visible: root.ready && root.acState.can_power_save
+                    on: root.ready && root.acState.power_save === true
+                    enabled: root.isOn
+                    onClicked: root.setToggle("power-save", "power_save", !on)
+                }
+                RoundToggle {
+                    iconName: "display"; text: i18n("Display"); tint: "#f59e0b"
+                    visible: root.ready && root.acState.can_display_light
+                    on: root.ready && root.acState.display_light === true
+                    enabled: root.isOn
+                    onClicked: root.setToggle("display", "display_light", !on)
+                }
+                RoundToggle {
+                    iconName: "timer"; text: root.activeTimers.length ? root.timerText(root.activeTimers[0]) : i18n("Timer"); tint: "#8b5cf6"
+                    visible: root.ready && root.acState.timers.length > 0
+                    on: root.activeTimers.length > 0 || root.timerPanelOpen
+                    onClicked: root.timerPanelOpen = !root.timerPanelOpen
+                }
+            }
+
+            // Timer panel
+            ColumnLayout {
+                Layout.fillWidth: true
+                visible: root.timerPanelOpen && root.ready
+                spacing: Kirigami.Units.smallSpacing
+                readonly property string kind: root.isOn ? "stop" : "start"
+
+                Repeater {
+                    model: root.activeTimers
+                    delegate: RowLayout {
+                        required property string modelData
+                        Layout.fillWidth: true
+                        Rectangle { width: 8; height: 8; radius: 4; color: "#8b5cf6" }
+                        PlasmaComponents.Label { text: root.timerText(modelData); Layout.fillWidth: true }
+                        PlasmaComponents.ToolButton { text: i18n("Cancel"); onClicked: root.setTimer(modelData, 0) }
+                    }
+                }
+                PlasmaComponents.Label {
+                    text: parent.kind === "stop" ? i18n("Turn off in…") : i18n("Turn on in…")
+                    opacity: 0.7
+                    font: Kirigami.Theme.smallFont
+                }
+                GridLayout {
+                    id: durations
+                    Layout.fillWidth: true
+                    columns: 3
+                    columnSpacing: Kirigami.Units.smallSpacing
+                    rowSpacing: Kirigami.Units.smallSpacing
+                    readonly property string kind: parent.kind
+                    Repeater {
+                        model: [30, 60, 120, 240, 360, 480]
+                        delegate: PlasmaComponents.Button {
+                            required property int modelData
+                            Layout.fillWidth: true
+                            Layout.preferredWidth: 1
+                            text: root.duration(modelData)
+                            onClicked: { root.setTimer(durations.kind, modelData); root.timerPanelOpen = false }
+                        }
+                    }
+                }
+            }
+
+            // Filter
+            RowLayout {
+                Layout.fillWidth: true
+                visible: root.ready && root.acState.filter_used_hours !== null && root.acState.filter_used_hours !== undefined
+                opacity: 0.6
+                Kirigami.Icon {
+                    source: Qt.resolvedUrl("../icons/filter.svg")
+                    isMask: true
+                    color: Kirigami.Theme.textColor
+                    Layout.preferredWidth: Kirigami.Units.iconSizes.small
+                    Layout.preferredHeight: Kirigami.Units.iconSizes.small
+                }
+                PlasmaComponents.Label {
+                    Layout.fillWidth: true
+                    font: Kirigami.Theme.smallFont
+                    text: {
+                        if (!root.ready) return ""
+                        let s = i18n("Filter used %1 h", root.acState.filter_used_hours)
+                        if (root.acState.filter_lifetime_hours)
+                            s += " · " + i18n("%1% left", Math.max(0, Math.round(100 - 100 * root.acState.filter_used_hours / root.acState.filter_lifetime_hours)))
+                        return s
+                    }
+                }
+            }
+
             RowLayout {
                 Layout.fillWidth: true
                 PlasmaComponents.Label {
@@ -390,6 +540,89 @@ PlasmoidItem {
                     PlasmaComponents.ToolTip { text: i18n("Refresh") }
                     Accessible.name: i18n("Refresh")
                 }
+            }
+        }
+    }
+
+    component PresetPill: PlasmaComponents.AbstractButton {
+        id: pill
+        property var preset
+        readonly property color tint: root.presetTints[preset.id] || Kirigami.Theme.highlightColor
+        readonly property bool active: root.presetActive(preset)
+        implicitHeight: Kirigami.Units.gridUnit * 1.8
+        onClicked: root.applyPreset(preset)
+        Accessible.name: preset.name
+        Accessible.description: preset.description
+        PlasmaComponents.ToolTip { text: pill.preset.description }
+        background: Rectangle {
+            radius: height / 2
+            color: pill.active ? pill.tint
+                 : Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, pill.hovered ? 0.12 : 0.06)
+            border.width: pill.visualFocus ? 2 : 0
+            border.color: Kirigami.Theme.focusColor
+            Behavior on color { ColorAnimation { duration: Kirigami.Units.shortDuration } }
+        }
+        contentItem: RowLayout {
+            spacing: Kirigami.Units.smallSpacing
+            Item { Layout.fillWidth: true }
+            Kirigami.Icon {
+                source: Qt.resolvedUrl("../icons/" + pill.preset.icon + ".svg")
+                isMask: true
+                color: pill.active ? "white" : pill.tint
+                Layout.preferredWidth: Kirigami.Units.iconSizes.small
+                Layout.preferredHeight: Kirigami.Units.iconSizes.small
+            }
+            PlasmaComponents.Label {
+                text: pill.preset.name
+                color: pill.active ? "white" : Kirigami.Theme.textColor
+                font: Kirigami.Theme.smallFont
+            }
+            Item { Layout.fillWidth: true }
+        }
+    }
+
+    // A round icon toggle with a caption, filled with its tint when on.
+    component RoundToggle: PlasmaComponents.AbstractButton {
+        id: toggle
+        property string iconName
+        property color tint
+        property bool on: false
+        Layout.fillWidth: true
+        Layout.preferredWidth: 1
+        implicitHeight: Kirigami.Units.gridUnit * 3.6
+        Accessible.name: text
+        Accessible.role: Accessible.CheckBox
+        Accessible.checked: on
+        background: Item {}
+        contentItem: ColumnLayout {
+            spacing: Kirigami.Units.smallSpacing / 2
+            opacity: toggle.enabled ? 1 : 0.45
+            Rectangle {
+                Layout.alignment: Qt.AlignHCenter
+                width: Kirigami.Units.gridUnit * 2.2
+                height: width
+                radius: width / 2
+                color: toggle.on ? toggle.tint
+                     : Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, toggle.hovered ? 0.14 : 0.07)
+                border.width: toggle.visualFocus ? 2 : 0
+                border.color: Kirigami.Theme.focusColor
+                Behavior on color { ColorAnimation { duration: Kirigami.Units.shortDuration } }
+                Kirigami.Icon {
+                    anchors.centerIn: parent
+                    width: Kirigami.Units.iconSizes.smallMedium
+                    height: width
+                    source: Qt.resolvedUrl("../icons/" + toggle.iconName + ".svg")
+                    isMask: true
+                    color: toggle.on ? "white" : Kirigami.Theme.textColor
+                }
+            }
+            PlasmaComponents.Label {
+                Layout.alignment: Qt.AlignHCenter
+                Layout.maximumWidth: toggle.width
+                text: toggle.text
+                font: Kirigami.Theme.smallFont
+                elide: Text.ElideRight
+                horizontalAlignment: Text.AlignHCenter
             }
         }
     }

@@ -45,6 +45,20 @@ after(12000, () => {
 after(17000, () => {
     check('error reported', backend.errorShown && backend.message.includes('TURBO'), backend.message);
     check('real state restored', backend.state.fan_speed === 'HIGH', backend.state.fan_speed);
+    backend.setToggle('swing', 'swing', true);
+    backend.setTimer('stop', 90);
+    const eco = backend.state.presets.find(p => p.id === 'eco');
+    backend.applyPreset(eco);
+    check('extras show immediately', backend.state.swing === true && backend.state.timer_stop === 90 &&
+        backend.state.power_save === true, JSON.stringify(backend.state));
+    check('timer listed as active', backend.activeTimers.join() === 'stop', backend.activeTimers.join());
+});
+
+after(30000, () => {
+    check('extras confirmed by read-back', backend.state.swing === true && backend.state.timer_stop === 90 &&
+        backend.state.power_save === true && backend.state.target_temp === 26, JSON.stringify(backend.state));
+    const eco = backend.state.presets.find(p => p.id === 'eco');
+    check('eco preset now active', backend.presetActive(eco), JSON.stringify(eco.changes));
     backend.destroy();
     loop.quit();
 });

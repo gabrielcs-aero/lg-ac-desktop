@@ -16,6 +16,21 @@ POWER_OFF = "POWER_OFF"
 # Modes whose target temperature lives in its own property on some models.
 _MODE_TARGET_PREFIX = {"COOL": "COOL", "HEAT": "HEAT", "AUTO": "AUTO"}
 
+# Timers count down from now. "start"/"stop" turn the unit on/off; "sleep" turns it off.
+TIMER_KINDS = ("start", "stop", "sleep")
+MAX_TIMER_MINUTES = 24 * 60
+# (status resource, "is set" key, hour key, minute key) for each timer kind
+_TIMER_FIELDS = {
+    "start": ("timer", "relativeStartTimer", "relativeHourToStart", "relativeMinuteToStart"),
+    "stop": ("timer", "relativeStopTimer", "relativeHourToStop", "relativeMinuteToStop"),
+    "sleep": ("sleepTimer", "relativeStopTimer", "relativeHourToStop", "relativeMinuteToStop"),
+}
+_TIMER_HOUR_PROP = {
+    "start": P.RELATIVE_HOUR_TO_START,
+    "stop": P.RELATIVE_HOUR_TO_STOP,
+    "sleep": P.SLEEP_TIMER_RELATIVE_HOUR_TO_STOP,
+}
+
 
 @dataclass(frozen=True)
 class DeviceInfo:
@@ -39,6 +54,21 @@ class AcState:
     unit: str = "C"
     fan_speed: str | None = None
     fan_speeds: list[str] = field(default_factory=list)
+    # Extras. `None` means the unit doesn't report it; the can_* flags say whether it can be changed.
+    swing: bool | None = None
+    can_swing: bool = False
+    power_save: bool | None = None
+    can_power_save: bool = False
+    display_light: bool | None = None
+    can_display_light: bool = False
+    filter_used_hours: int | None = None
+    filter_lifetime_hours: int | None = None  # None when the unit doesn't report a lifetime
+    error: bool = False
+    # Minutes left on each timer; None when it isn't set.
+    timer_start: int | None = None
+    timer_stop: int | None = None
+    timer_sleep: int | None = None
+    timers: tuple[str, ...] = ()  # timer kinds this unit supports
 
 
 class AcController:
@@ -48,6 +78,7 @@ class AcController:
         self._api = api
         self._device: AirConditionerDevice | None = None
         self._unit = "C"
+        self._status: dict = {}  # last raw status, for fields the SDK doesn't expose
         # Commands go out one at a time, in the order they were issued.
         self._command_lock = asyncio.Lock()
 
@@ -87,6 +118,7 @@ class AcController:
         device = self._require_device()
         status = await self._api.async_get_device_status(device.device_id)
         device.set_status(status)
+        self._status = status or {}
         return self.state()
 
     def state(self) -> AcState:
@@ -110,6 +142,19 @@ class AcController:
             unit=unit,
             fan_speed=device.get_status(P.WIND_STRENGTH),
             fan_speeds=list(self._writable_values(P.WIND_STRENGTH) or []),
+            swing=self._read(P.WIND_ROTATE_UP_DOWN),
+            can_swing=self._writable(P.WIND_ROTATE_UP_DOWN),
+            power_save=self._read(P.POWER_SAVE_ENABLED),
+            can_power_save=self._writable(P.POWER_SAVE_ENABLED),
+            display_light=None if (light := self._read(P.DISPLAY_LIGHT)) is None else light == "ON",
+            can_display_light=self._writable(P.DISPLAY_LIGHT),
+            filter_used_hours=self._status.get("filterInfo", {}).get("usedTime"),
+            filter_lifetime_hours=self._status.get("filterInfo", {}).get("filterLifetime") or None,
+            error=self._status.get("runState", {}).get("currentState") == "ERROR",
+            timer_start=self._timer_minutes("start"),
+            timer_stop=self._timer_minutes("stop"),
+            timer_sleep=self._timer_minutes("sleep"),
+            timers=tuple(kind for kind in TIMER_KINDS if self._writable(_TIMER_HOUR_PROP[kind])),
         )
 
     # Commands only send; call refresh() afterwards to read back what the unit reports.
@@ -125,6 +170,64 @@ class AcController:
     async def set_fan_speed(self, speed: str) -> None:
         async with self._command_lock:
             await self._require_device().set_wind_strength(speed)
+
+    async def set_swing(self, on: bool) -> None:
+        async with self._command_lock:
+            await self._require_device().set_wind_rotate_up_down(on)
+
+    async def set_power_save(self, on: bool) -> None:
+        async with self._command_lock:
+            await self._require_device().set_power_save_enabled(on)
+
+    async def set_display_light(self, on: bool) -> None:
+        async with self._command_lock:
+            await self._require_device().set_display_light("ON" if on else "OFF")
+
+    async def set_timer(self, kind: str, minutes: int) -> None:
+        """Start a countdown timer of `minutes`; 0 cancels it."""
+        if kind not in TIMER_KINDS:
+            raise ValueError(f"Unknown timer {kind!r}.")
+        if minutes == 0:
+            return await self.cancel_timer(kind)
+        if not 1 <= minutes <= MAX_TIMER_MINUTES:
+            raise ValueError("Timers can be set from 1 minute to 24 hours.")
+        device = self._require_device()
+        hours, mins = divmod(int(minutes), 60)
+        setter = {
+            "start": device.set_relative_time_to_start,
+            "stop": device.set_relative_time_to_stop,
+            "sleep": device.set_sleep_timer_relative_time_to_stop,
+        }[kind]
+        async with self._command_lock:
+            await setter(hours, mins)
+
+    async def cancel_timer(self, kind: str) -> None:
+        # The SDK has no call for this, so send the documented payload directly.
+        resource, flag, _, _ = _TIMER_FIELDS[kind]
+        device = self._require_device()
+        async with self._command_lock:
+            await self._api.async_post_device_control(device_id=device.device_id, payload={resource: {flag: "UNSET"}})
+
+    async def apply(self, changes: dict) -> None:
+        """Apply several changes (AcState field -> value) in a safe order, e.g. from a preset."""
+        from .presets import APPLY_ORDER
+
+        mode = changes.get("mode")
+        steps = {
+            "power": self.set_power,
+            "mode": self.set_mode,
+            "target_temp": lambda value: self.set_target_temperature(value, mode=mode),
+            "fan_speed": self.set_fan_speed,
+            "swing": self.set_swing,
+            "power_save": self.set_power_save,
+            "display_light": self.set_display_light,
+            "timer_start": lambda minutes: self.set_timer("start", minutes or 0),
+            "timer_stop": lambda minutes: self.set_timer("stop", minutes or 0),
+            "timer_sleep": lambda minutes: self.set_timer("sleep", minutes or 0),
+        }
+        for field in APPLY_ORDER:
+            if field in changes:
+                await steps[field](changes[field])
 
     async def set_target_temperature(self, value: float, mode: str | None = None) -> None:
         """Set the target for `mode` (default: the last mode read from the unit)."""
@@ -164,6 +267,16 @@ class AcController:
             if self._readable(prop) and (value := device.get_status(prop)) is not None:
                 return value
         return None
+
+    def _read(self, prop: str):
+        return self._require_device().get_status(prop) if self._readable(prop) else None
+
+    def _timer_minutes(self, kind: str) -> int | None:
+        resource, flag, hour_key, minute_key = _TIMER_FIELDS[kind]
+        timer = self._status.get(resource) or {}
+        if timer.get(flag) != "SET":
+            return None
+        return int(timer.get(hour_key) or 0) * 60 + int(timer.get(minute_key) or 0)
 
     def _readable(self, prop: str) -> bool:
         try:

@@ -7,6 +7,11 @@ Every command prints one line of JSON: {"ok": true, ...} or {"ok": false, "error
     lg-ac-cli mode COOL
     lg-ac-cli fan HIGH
     lg-ac-cli temp 23.5 [--mode COOL]
+    lg-ac-cli swing on|off
+    lg-ac-cli power-save on|off
+    lg-ac-cli display on|off
+    lg-ac-cli timer start|stop|sleep MINUTES     (0 cancels)
+    lg-ac-cli preset sleep|max_cool|eco
 
 Add --demo to talk to a simulated unit instead of the real one.
 """
@@ -27,6 +32,7 @@ from thinqconnect import ThinQApi, ThinQAPIException
 from .config import load_config
 from .controller import AcController, AcState, DeviceInfo
 from .demo import DemoApi
+from .presets import get_preset, plan, presets_for
 from .text import describe_error, pretty
 
 # Errors meaning the cached device is no longer valid for this account.
@@ -57,6 +63,7 @@ def state_to_json(device: DeviceInfo, state: AcState) -> dict:
     data["labels"] = {value: pretty(value) for value in [*state.modes, *state.fan_speeds]}
     data["alias"] = device.alias
     data["model_name"] = device.model_name
+    data["presets"] = presets_for(state)
     return data
 
 
@@ -125,6 +132,17 @@ async def _execute(controller: AcController, device: DeviceInfo, args: argparse.
             await controller.refresh()  # need the current mode to pick the right setpoint
         value = int(args.value) if args.value.is_integer() else args.value
         await controller.set_target_temperature(value, mode=args.mode)
+    elif args.command == "swing":
+        await controller.set_swing(args.value == "on")
+    elif args.command == "power-save":
+        await controller.set_power_save(args.value == "on")
+    elif args.command == "display":
+        await controller.set_display_light(args.value == "on")
+    elif args.command == "timer":
+        await controller.set_timer(args.kind, args.minutes)
+    elif args.command == "preset":
+        preset = get_preset(args.value)
+        await controller.apply(plan(preset, await controller.refresh()))
     return {"ok": True}
 
 
@@ -139,6 +157,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     temp = commands.add_parser("temp", help="set the target temperature")
     temp.add_argument("value", type=float)
     temp.add_argument("--mode", help="mode the temperature is for (default: the unit's current mode)")
+    for name, help_text in (("swing", "up/down swing"), ("power-save", "power-saving mode"), ("display", "the unit's display light")):
+        commands.add_parser(name, help=f"turn {help_text} on or off").add_argument("value", choices=["on", "off"])
+    timer = commands.add_parser("timer", help="start a countdown timer (0 minutes cancels it)")
+    timer.add_argument("kind", choices=["start", "stop", "sleep"], help="start: turn on, stop: turn off, sleep: sleep timer")
+    timer.add_argument("minutes", type=int)
+    commands.add_parser("preset", help="apply a preset").add_argument("value")
     return parser.parse_args(argv)
 
 

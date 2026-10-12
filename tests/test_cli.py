@@ -49,6 +49,26 @@ class CliTest(unittest.TestCase):
         self.assertEqual(run_cli("--demo", "temp", "25")[0], 0)
         self.assertEqual(run_cli("--demo", "status")[1]["state"]["target_temp"], 25)
 
+    def test_extras_and_timers(self):
+        for argv in (("swing", "on"), ("power-save", "on"), ("display", "off"), ("timer", "stop", "90")):
+            self.assertEqual(run_cli("--demo", *argv), (0, {"ok": True}), argv)
+        state = run_cli("--demo", "status")[1]["state"]
+        self.assertEqual((state["swing"], state["power_save"], state["display_light"], state["timer_stop"]),
+                         (True, True, False, 90))
+        self.assertEqual(run_cli("--demo", "timer", "stop", "0")[0], 0)
+        self.assertIsNone(run_cli("--demo", "status")[1]["state"]["timer_stop"])
+
+    def test_preset(self):
+        presets = run_cli("--demo", "status")[1]["state"]["presets"]
+        sleep = next(p for p in presets if p["id"] == "sleep")
+        self.assertEqual(sleep["changes"]["timer_sleep"], 480)
+        self.assertEqual(run_cli("--demo", "preset", "sleep"), (0, {"ok": True}))
+        state = run_cli("--demo", "status")[1]["state"]
+        self.assertEqual((state["target_temp"], state["fan_speed"], state["timer_sleep"]), (25, "LOW", 480))
+        code, out = run_cli("--demo", "preset", "party")
+        self.assertEqual(code, 1)
+        self.assertIn("Unknown preset", out["error"])
+
     def test_invalid_value_is_reported_as_json(self):
         code, out = run_cli("--demo", "fan", "TURBO")
         self.assertEqual(code, 1)

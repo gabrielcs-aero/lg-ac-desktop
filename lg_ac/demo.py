@@ -32,6 +32,14 @@ def _enum(values, mode=("r", "w")):
     return {"type": "enum", "mode": list(mode), "value": {m: list(values) for m in mode}}
 
 
+def _number():
+    return {"type": "number", "mode": ["r", "w"]}
+
+
+def _cancel_only():
+    return {"type": "enum", "mode": ["r", "w"], "value": {"r": ["SET", "UNSET"], "w": ["UNSET"]}}
+
+
 def _write_only_range(lo, hi, step):
     return {"type": "range", "mode": ["w"], "value": {"w": {"min": lo, "max": hi, "step": step}}}
 
@@ -57,6 +65,24 @@ PROFILE = {
         "operation": {"airConOperationMode": _enum(["POWER_ON", "POWER_OFF"])},
         "temperatureInUnits": [_temperatures("C", 18, 30, 0.5), _temperatures("F", 64, 86, 1)],
         "airFlow": {"windStrength": _enum(["NATURE", "LOW", "LOW_MID", "MID", "MID_HIGH", "HIGH"])},
+        "timer": {
+            "relativeHourToStop": _number(),
+            "relativeMinuteToStop": _number(),
+            "relativeStopTimer": _cancel_only(),
+            "relativeHourToStart": _number(),
+            "relativeMinuteToStart": _number(),
+            "relativeStartTimer": _cancel_only(),
+        },
+        "sleepTimer": {
+            "relativeHourToStop": _number(),
+            "relativeMinuteToStop": _number(),
+            "relativeStopTimer": _cancel_only(),
+        },
+        "powerSave": {"powerSaveEnabled": _enum([False, True])},
+        "windDirection": {"rotateUpDown": _enum([True, False])},
+        "display": {"light": _enum(["ON", "OFF"])},
+        "filterInfo": {"filterLifetime": {"type": "number", "mode": ["r"]}, "usedTime": {"type": "number", "mode": ["r"]}},
+        "runState": {"currentState": _enum(["NORMAL", "ERROR"], mode=("r",))},
     },
 }
 
@@ -68,6 +94,21 @@ STATUS = {
         {"currentTemperature": 79, "targetTemperature": 72, "minTargetTemperature": 64, "maxTargetTemperature": 86, "unit": "F"},
     ],
     "airFlow": {"windStrength": "MID"},
+    "timer": {"relativeStartTimer": "UNSET", "relativeStopTimer": "UNSET"},
+    "sleepTimer": {"relativeStopTimer": "UNSET"},
+    "powerSave": {"powerSaveEnabled": False},
+    "windDirection": {"rotateUpDown": False},
+    "display": {"light": "ON"},
+    "filterInfo": {"filterLifetime": 0, "usedTime": 720},
+    "runState": {"currentState": "NORMAL"},
+}
+
+# Which "is set" flag each timer field belongs to.
+_TIMER_FLAGS = {
+    "relativeHourToStart": "relativeStartTimer",
+    "relativeMinuteToStart": "relativeStartTimer",
+    "relativeHourToStop": "relativeStopTimer",
+    "relativeMinuteToStop": "relativeStopTimer",
 }
 
 
@@ -106,6 +147,23 @@ class DemoApi:
                         for key, value in values.items():
                             if key.endswith("argetTemperature"):  # cool/auto setpoints read back as the target
                                 entry["targetTemperature"] = value
+            elif resource in ("timer", "sleepTimer"):
+                self._apply_timer(self.status.setdefault(resource, {}), values)
             else:
                 self.status.setdefault(resource, {}).update(values)
         return {}
+
+    @staticmethod
+    def _apply_timer(timer: dict, values: dict) -> None:
+        for key, value in values.items():
+            if value == "UNSET":  # cancel: drop the countdown that belongs to this flag
+                timer[key] = "UNSET"
+                for field, flag in _TIMER_FLAGS.items():
+                    if flag == key:
+                        timer.pop(field, None)
+            elif key in _TIMER_FLAGS:
+                timer[key] = value
+                timer[_TIMER_FLAGS[key]] = "SET"
+                # Setting only the hours clears any leftover minutes, like the real unit.
+                if key.startswith("relativeHour"):
+                    timer.setdefault(key.replace("Hour", "Minute"), 0)

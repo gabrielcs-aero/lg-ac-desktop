@@ -33,3 +33,30 @@
 .lg-ac-status.lg-ac-error { color: #ff7b63; }
 .lg-ac-icon-button { padding: 4px; border-radius: 99px; }
 .lg-ac-icon-button:hover { background-color: rgba(255, 255, 255, 0.12); }
+
+.lg-ac-fault { color: #ff7b63; font-size: 0.9em; }
+
+.lg-ac-preset-row { spacing: 6px; }
+.lg-ac-preset {
+    padding: 6px 8px;
+    border-radius: 99px;
+    background-color: rgba(255, 255, 255, 0.06);
+    transition-duration: 150ms;
+}
+.lg-ac-preset:hover { background-color: rgba(255, 255, 255, 0.12); }
+.lg-ac-preset-content { spacing: 6px; font-size: 0.9em; font-weight: bold; }
+
+.lg-ac-toggle-row { spacing: 6px; }
+.lg-ac-toggle { padding: 4px 0; border-radius: 12px; }
+.lg-ac-toggle:hover .lg-ac-toggle-circle { background-color: rgba(255, 255, 255, 0.16); }
+.lg-ac-toggle-content { spacing: 4px; }
+.lg-ac-toggle-circle {
+    width: 40px;
+    height: 40px;
+    border-radius: 20px;
+    background-color: rgba(255, 255, 255, 0.08);
+    transition-duration: 150ms;
+}
+.lg-ac-toggle-label { font-size: 0.8em; }
+
+.lg-ac-filter { font-size: 0.85em; color: rgba(255, 255, 255, 0.55); }

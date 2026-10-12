@@ -61,6 +61,21 @@ class AppTest(unittest.TestCase):
         self.assertTrue(wait_until(lambda: self.model.message == "Sent"))
         self.assertEqual(self.warnings, [])
 
+    def test_extras_and_presets_show_immediately(self):
+        self.model.start()
+        wait_until(lambda: self.model.ready)
+        self.assertEqual(self.model.ac["timers"], ["start", "stop", "sleep"])  # lists, not tuples, for QML
+        self.model.setSwing(True)
+        self.model.setTimer("stop", 90)
+        self.assertEqual((self.model.ac["swing"], self.model.ac["timer_stop"]), (True, 90))
+        self.model.applyPreset("eco")
+        self.assertEqual((self.model.ac["target_temp"], self.model.ac["power_save"]), (26, True))
+        self.assertTrue(wait_until(lambda: self.model.message == "Sent"))
+        self.model.refresh()
+        self.assertTrue(wait_until(lambda: self.model.message == "Up to date"))
+        self.assertEqual((self.model.ac["swing"], self.model.ac["timer_stop"], self.model.ac["power_save"]), (True, 90, True))
+        self.assertEqual(self.warnings, [])
+
     def test_setup_screen_when_not_configured(self):
         model = AcModel(self.runner, Config(), demo=False)
         model.start()

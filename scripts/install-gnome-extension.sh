@@ -22,7 +22,8 @@ rm -rf "$dest"
 mkdir -p "$dest/icons"
 cp -r "$src/." "$dest/"
 # GNOME only recolours icons whose file name ends in -symbolic.
-for icon in "$repo"/lg_ac/icons/mode-*.svg "$repo"/lg_ac/icons/power.svg; do
+for icon in "$repo"/lg_ac/icons/*.svg; do
+    [[ "$(basename "$icon")" == "lg-ac.svg" ]] && continue   # the colour app icon isn't symbolic
     cp "$icon" "$dest/icons/$(basename "$icon" .svg)-symbolic.svg"
 done
 # Point the extension's settings at this install.
