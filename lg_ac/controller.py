@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 
 from thinqconnect import ThinQApi
@@ -33,6 +34,8 @@ class AcState:
     temp_min: float | None = None
     temp_max: float | None = None
     temp_step: float = 1
+    can_set_temp: bool = False
+    temp_modes: tuple[str, ...] = ()  # modes that have an adjustable target temperature
     unit: str = "C"
     fan_speed: str | None = None
     fan_speeds: list[str] = field(default_factory=list)
@@ -45,6 +48,8 @@ class AcController:
         self._api = api
         self._device: AirConditionerDevice | None = None
         self._unit = "C"
+        # Commands go out one at a time, in the order they were issued.
+        self._command_lock = asyncio.Lock()
 
     @property
     def device_id(self) -> str | None:
@@ -81,59 +86,78 @@ class AcController:
     def state(self) -> AcState:
         device = self._require_device()
         unit = self._unit
-        target_prop = self._target_temperature_prop()
-        limits = self._writable_values(target_prop) if target_prop else None
+        write_prop = self._target_temperature_prop()
+        limits = self._writable_values(write_prop) if write_prop else None
         power = device.get_status(P.AIR_CON_OPERATION_MODE)
+        modes = list(self._writable_values(P.CURRENT_JOB_MODE) or [])
         return AcState(
             power=None if power is None else power == POWER_ON,
             mode=device.get_status(P.CURRENT_JOB_MODE),
-            modes=list(self._writable_values(P.CURRENT_JOB_MODE) or []),
+            modes=modes,
             current_temp=device.get_status(getattr(P, f"CURRENT_TEMPERATURE_{unit}")),
-            target_temp=device.get_status(target_prop) if target_prop else None,
+            target_temp=self._read_target_temperature(),
             temp_min=limits.get("min") if isinstance(limits, dict) else None,
             temp_max=limits.get("max") if isinstance(limits, dict) else None,
             temp_step=limits.get("step", 1) if isinstance(limits, dict) else 1,
+            can_set_temp=write_prop is not None,
+            temp_modes=tuple(m for m in modes if self._target_temperature_prop(m) is not None),
             unit=unit,
             fan_speed=device.get_status(P.WIND_STRENGTH),
             fan_speeds=list(self._writable_values(P.WIND_STRENGTH) or []),
         )
 
-    async def set_power(self, on: bool) -> AcState:
-        await self._require_device().set_air_con_operation_mode(POWER_ON if on else POWER_OFF)
-        return await self.refresh()
+    # Commands only send; call refresh() afterwards to read back what the unit reports.
 
-    async def set_mode(self, mode: str) -> AcState:
-        await self._require_device().set_current_job_mode(mode)
-        return await self.refresh()
+    async def set_power(self, on: bool) -> None:
+        async with self._command_lock:
+            await self._require_device().set_air_con_operation_mode(POWER_ON if on else POWER_OFF)
 
-    async def set_fan_speed(self, speed: str) -> AcState:
-        await self._require_device().set_wind_strength(speed)
-        return await self.refresh()
+    async def set_mode(self, mode: str) -> None:
+        async with self._command_lock:
+            await self._require_device().set_current_job_mode(mode)
 
-    async def set_target_temperature(self, value: float) -> AcState:
+    async def set_fan_speed(self, speed: str) -> None:
+        async with self._command_lock:
+            await self._require_device().set_wind_strength(speed)
+
+    async def set_target_temperature(self, value: float, mode: str | None = None) -> None:
+        """Set the target for `mode` (default: the last mode read from the unit)."""
         device = self._require_device()
-        prop = self._target_temperature_prop()
+        prop = self._target_temperature_prop(mode)
         if prop is None:
             raise ValueError("This air conditioner doesn't accept a target temperature in the current mode.")
         if not device.profiles.check_range_attribute_writable(prop, value):
             limits = self._writable_values(prop) or {}
             raise ValueError(f"{value:g}° is outside the allowed range ({limits.get('min')}–{limits.get('max')}).")
-        await device.do_multi_attribute_command({prop: value, P.TEMPERATURE_UNIT: self._unit})
-        return await self.refresh()
+        async with self._command_lock:
+            await device.do_multi_attribute_command({prop: value, P.TEMPERATURE_UNIT: self._unit})
 
     def _require_device(self) -> AirConditionerDevice:
         if self._device is None:
             raise RuntimeError("No air conditioner connected yet.")
         return self._device
 
-    def _target_temperature_prop(self) -> str | None:
-        """Pick the writable target-temperature property for the current mode and unit."""
-        device = self._require_device()
+    def _target_temperature_candidates(self, mode: str | None = None) -> list[str]:
+        """Target-temperature properties for a mode (default: current) and unit, most specific first."""
+        mode = mode or self._require_device().get_status(P.CURRENT_JOB_MODE)
         candidates = [getattr(P, f"TARGET_TEMPERATURE_{self._unit}")]
-        prefix = _MODE_TARGET_PREFIX.get(device.get_status(P.CURRENT_JOB_MODE) or "")
+        prefix = _MODE_TARGET_PREFIX.get(mode or "")
         if prefix:
             candidates.insert(0, getattr(P, f"{prefix}_TARGET_TEMPERATURE_{self._unit}"))
-        return next((p for p in candidates if self._writable(p)), None)
+        return candidates
+
+    def _target_temperature_prop(self, mode: str | None = None) -> str | None:
+        """The property to write a new target temperature to."""
+        return next((p for p in self._target_temperature_candidates(mode) if self._writable(p)), None)
+
+    def _read_target_temperature(self) -> float | None:
+        # Some units (e.g. S3NQ09AM31A) take the setpoint through a write-only property such as
+        # coolTargetTemperature and only report it back through the generic targetTemperature.
+        device = self._require_device()
+        for prop in self._target_temperature_candidates():
+            if self._readable(prop) and (value := device.get_status(prop)) is not None:
+                return value
+        return None
 
     def _readable(self, prop: str) -> bool:
         try:

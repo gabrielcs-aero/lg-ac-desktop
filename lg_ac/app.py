@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from dataclasses import replace
 import threading
 from typing import Any, Callable, Coroutine
 
@@ -34,6 +35,9 @@ from .demo import DemoApi
 
 POLL_INTERVAL_MS = 60_000
 TEMPERATURE_SEND_DELAY_MS = 700
+# How long after the last command to read the unit back, giving it time to apply the change.
+SETTLE_MS = 4_000
+DEMO_LATENCY_S = 1.0
 TOKEN_URL = "https://connect-pat.lgthinq.com"
 
 STYLE = """
@@ -168,7 +172,9 @@ class MainWindow(QMainWindow):
         self.devices: list[DeviceInfo] = []
         self.state: AcState | None = None
         self.pending_target: float | None = None
-        self.busy = False
+        self.in_flight = 0  # commands sent but not yet acknowledged
+        self.generation = 0  # bumped on every user change, so stale refreshes can be dropped
+        self.error_shown = False
 
         self.setWindowTitle("Air Conditioner")
         self.setMinimumWidth(420)
@@ -176,6 +182,7 @@ class MainWindow(QMainWindow):
 
         self.poll_timer = QTimer(self, interval=POLL_INTERVAL_MS, timeout=self.refresh)
         self.temp_timer = QTimer(self, singleShot=True, interval=TEMPERATURE_SEND_DELAY_MS, timeout=self._send_target)
+        self.settle_timer = QTimer(self, singleShot=True, interval=SETTLE_MS, timeout=self.refresh)
 
     # ---------- layout ----------
 
@@ -300,7 +307,7 @@ class MainWindow(QMainWindow):
 
     async def _open_api(self) -> list[DeviceInfo]:
         if self.demo:
-            self.controller = AcController(DemoApi())
+            self.controller = AcController(DemoApi(latency=DEMO_LATENCY_S))
             return await self.controller.list_air_conditioners()
         if self.session:
             await self.session.close()
@@ -343,27 +350,56 @@ class MainWindow(QMainWindow):
     def _connected(self, state: AcState) -> None:
         self._fill_choices(self.mode_row, self.mode_group, state.modes)
         self._fill_choices(self.fan_row, self.fan_group, state.fan_speeds)
+        self.state = state
         self._apply_state(state)
+        self._set_controls_enabled(True)
+        self.status("Up to date.")
         self.poll_timer.start()
 
     # ---------- commands ----------
+    #
+    # Changes show up in the window immediately and are sent in the background, so the
+    # controls never lock up. A few seconds after the last command the window reads the
+    # unit back to confirm; if LG rejects a command, that read-back corrects the display.
 
     def refresh(self) -> None:
-        if self.controller is None or self.controller.device_id is None or self.busy:
+        if self.controller is None or self.controller.device_id is None:
             return
-        self._run(self.controller.refresh(), "Refreshing…")
+        generation = self.generation
+        self.runner.submit(
+            self.controller.refresh(),
+            lambda state: self._refreshed(state, generation),
+            self._refresh_failed,
+        )
+
+    def _refreshed(self, state: AcState, generation: int) -> None:
+        if generation != self.generation or self.in_flight:
+            return  # the user changed something meanwhile; a newer read-back is coming
+        self.state = state
+        self._apply_state(state)
+        if not self.error_shown:
+            self.status("Up to date.")
+
+    def _refresh_failed(self, error: BaseException) -> None:
+        self._show_error(error)
 
     def _toggle_power(self) -> None:
         on = self.power_button.isChecked()
-        self._run(self.controller.set_power(on), "Turning on…" if on else "Turning off…")
+        self._send(self.controller.set_power(on), power=on)
 
     def _mode_clicked(self, button_id: int) -> None:
         mode = self.mode_group.button(button_id).property("value")
-        self._run(self.controller.set_mode(mode), f"Switching to {pretty(mode)}…")
+        if self.state and mode == self.state.mode:
+            return
+        self.pending_target = None
+        self.temp_timer.stop()
+        self._send(self.controller.set_mode(mode), mode=mode, can_set_temp=mode in self.state.temp_modes)
 
     def _fan_clicked(self, button_id: int) -> None:
         speed = self.fan_group.button(button_id).property("value")
-        self._run(self.controller.set_fan_speed(speed), f"Fan {pretty(speed).lower()}…")
+        if self.state and speed == self.state.fan_speed:
+            return
+        self._send(self.controller.set_fan_speed(speed), fan_speed=speed)
 
     def _nudge_target(self, direction: int) -> None:
         state = self.state
@@ -375,27 +411,44 @@ class MainWindow(QMainWindow):
         if state.temp_max is not None:
             value = min(value, state.temp_max)
         self.pending_target = value
+        self.generation += 1
         self.target_label.setText(f"{value:g}°{state.unit}")
         self.temp_timer.start()  # wait for clicks to settle before sending one command
 
     def _send_target(self) -> None:
         value, self.pending_target = self.pending_target, None
-        if value is not None:
-            self._run(self.controller.set_target_temperature(value), f"Setting {value:g}°…")
+        if value is None or self.state is None or value == self.state.target_temp:
+            return
+        self._send(self.controller.set_target_temperature(value, mode=self.state.mode), target_temp=value)
 
-    def _run(self, coro, message: str) -> None:
-        self.busy = True
-        self._set_controls_enabled(False)
-        self.status(message)
-        self.runner.submit(coro, self._apply_state, self._show_error)
+    def _send(self, coro, **changes) -> None:
+        """Show `changes` right away, then send the command in the background."""
+        self.generation += 1
+        self.in_flight += 1
+        self.error_shown = False
+        self.settle_timer.stop()
+        self.state = replace(self.state, **changes)
+        self._apply_state(self.state)
+        self.status("Sending…")
+        self.runner.submit(coro, self._command_done, self._command_failed)
+
+    def _command_done(self, _result) -> None:
+        self.in_flight -= 1
+        if self.in_flight == 0:
+            if not self.error_shown:
+                self.status("Sent.")
+            self.settle_timer.start()
+
+    def _command_failed(self, error: BaseException) -> None:
+        self.in_flight -= 1
+        self._show_error(error)
+        if self.in_flight == 0:
+            self.generation += 1
+            self.refresh()  # put the controls back to what the unit really reports
 
     # ---------- display ----------
 
     def _apply_state(self, state: AcState) -> None:
-        self.busy = False
-        self.state = state
-        self._set_controls_enabled(True)
-
         self.power_button.setChecked(bool(state.power))
         self.power_button.setText("On — click to turn off" if state.power else "Off — click to turn on")
 
@@ -403,13 +456,12 @@ class MainWindow(QMainWindow):
         self.current_label.setText(f"Room: {state.current_temp:g}{unit}" if state.current_temp is not None else "Room: —")
         if self.pending_target is None:
             self.target_label.setText(f"{state.target_temp:g}{unit}" if state.target_temp is not None else "—")
-        has_target = state.target_temp is not None and bool(state.power)
+        has_target = state.can_set_temp and state.target_temp is not None and bool(state.power)
         self.down_button.setEnabled(has_target)
         self.up_button.setEnabled(has_target)
 
         self._check_value(self.mode_group, state.mode)
         self._check_value(self.fan_group, state.fan_speed)
-        self.status("Up to date.")
 
     @staticmethod
     def _check_value(group: QButtonGroup, value: str | None) -> None:
@@ -422,9 +474,10 @@ class MainWindow(QMainWindow):
         for group in (self.mode_group, self.fan_group):
             for button in group.buttons():
                 button.setEnabled(enabled)
+        if enabled and self.state:
+            self._apply_state(self.state)  # re-applies which of -/+ make sense
 
     def _show_error(self, error: BaseException) -> None:
-        self.busy = False
         if isinstance(error, ThinQAPIException):
             message = f"LG ThinQ said: {error.message} ({error.code})"
             hint = ERROR_HINTS.get(str(error.code))
@@ -434,20 +487,8 @@ class MainWindow(QMainWindow):
             message = f"Network problem: {error}"
         else:
             message = str(error) or type(error).__name__
+        self.error_shown = True
         self.status(message)
-        has_device = self.controller is not None and self.controller.device_id is not None
-        self._set_controls_enabled(has_device)
-        if self.state:
-            self._apply_state_quietly()
-
-    def _apply_state_quietly(self) -> None:
-        """Put the controls back to the last known state after a failed command."""
-        state = self.state
-        self.power_button.setChecked(bool(state.power))
-        self._check_value(self.mode_group, state.mode)
-        self._check_value(self.fan_group, state.fan_speed)
-        if state.target_temp is not None:
-            self.target_label.setText(f"{state.target_temp:g}°{state.unit}")
 
     def status(self, text: str) -> None:
         self.status_label.setText(text)
