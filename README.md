@@ -1,4 +1,4 @@
-<img src="lg_ac/icons/lg-ac.svg" width="96" align="right" alt="">
+
 
 # LG AC Desktop
 
