@@ -4,7 +4,7 @@ A small desktop app for controlling an LG ThinQ air conditioner from your PC: po
 
 ![Screenshot](docs/screenshot.png)
 
-It talks to LG's official [ThinQ Connect API](https://smartsolution.developer.lge.com/en/apiManage/thinq_connect) through LG's [`thinqconnect`](https://github.com/thinq-connect/pythinqconnect) Python SDK. It doesn't reverse-engineer the ThinQ app or use your LG password. Instead it uses a Personal Access Token that you create and can revoke at any time.
+It talks to LG's official [ThinQ Connect API](https://smartsolution.developer.lge.com/en/apiManage/thinq_connect) through LG's [`thinqconnect`](https://github.com/thinq-connect/pythinqconnect) Python SDK. It uses a Personal Access Token that you create and can revoke at any time.
 
 Built and tested against a wall-mounted unit (model S3NQ09AM31A), but it reads each unit's own capability profile. Modes, fan speeds and temperature limits therefore match whatever your model supports.
 
