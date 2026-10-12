@@ -1,4 +1,4 @@
-<img src="lg_ac/icons/lg-ac.svg" width="96" align="right" alt="">
+
 
 # LG AC Desktop
 
@@ -76,26 +76,7 @@ The widgets use `lg-ac-cli`, which you can also call yourself. Each command prin
 
 It caches your unit's profile in `~/.cache/lg-ac-desktop/` so each call needs only one request to LG.
 
-## How it's built
 
-| Path | What it is |
-| --- | --- |
-| `lg_ac/controller.py` | Lists your air conditioners, reads status and sends commands, validating each against the unit's profile. |
-| `lg_ac/app.py`, `lg_ac/qml/Main.qml` | The desktop app: a Qt Quick (QML) window driven by a Python model. Follows your system's light/dark setting (force one with `LG_AC_THEME=dark` or `light`). |
-| `lg_ac/cli.py` | `lg-ac-cli`, the JSON backend for the panel widgets. |
-| `widgets/kde/` | The Plasma widget (QML). |
-| `widgets/gnome/` | The GNOME Shell extension (GJS); `backend.js` holds its logic and `extension.js` its UI. |
-| `lg_ac/icons/` | Icons shared by the app and both widgets. |
-| `lg_ac/demo.py` | The simulated unit used by `--demo` and the tests. |
-
-## Tests
-
-```bash
-.venv/bin/python -m unittest discover -s tests -t .
-gjs -m tests/test_gnome_backend.js
-```
-
-Both run against the simulated unit, so they don't need a token.
 
 ## Troubleshooting
 
