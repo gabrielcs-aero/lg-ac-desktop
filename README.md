@@ -2,6 +2,8 @@
 
 # LG AC Desktop
 
+[![Tests](https://github.com/gabrielcs-aero/lg-ac-desktop/actions/workflows/tests.yml/badge.svg)](https://github.com/gabrielcs-aero/lg-ac-desktop/actions/workflows/tests.yml)
+
 Control an LG ThinQ air conditioner from your Linux desktop: power, mode, target temperature and fan speed. It comes in three forms:
 
 - **Desktop app**: a window you open from your app launcher.
