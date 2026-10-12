@@ -1,0 +1,54 @@
+// Runs the GNOME extension's backend under plain gjs against `lg-ac-cli --demo`.
+//   gjs -m tests/test_gnome_backend.js
+import GLib from 'gi://GLib';
+import System from 'system';
+import {AcBackend} from '../widgets/gnome/lg-ac@gabrielcs-aero.github.io/backend.js';
+
+const repo = GLib.path_get_dirname(GLib.path_get_dirname(GLib.filename_from_uri(import.meta.url)[0]));
+const cache = GLib.dir_make_tmp('lg-ac-test-XXXXXX');
+const cli = `env XDG_CACHE_HOME=${cache} ${repo}/.venv/bin/lg-ac-cli --demo`;
+
+const loop = new GLib.MainLoop(null, false);
+let failures = 0;
+const check = (name, ok, detail = '') => {
+    print(`${ok ? 'ok  ' : 'FAIL'} ${name}${ok ? '' : `  ${detail}`}`);
+    if (!ok)
+        failures++;
+};
+const after = (ms, fn) => GLib.timeout_add(GLib.PRIORITY_DEFAULT, ms, () => { fn(); return GLib.SOURCE_REMOVE; });
+
+const backend = new AcBackend(cli, () => {});
+backend.refresh();
+
+after(3000, () => {
+    check('loads state', backend.ready && backend.state.mode === 'COOL' && backend.state.target_temp === 22,
+        JSON.stringify(backend.state));
+    backend.setFan('HIGH');
+    backend.setMode('AUTO');
+    backend.nudge(1);
+    backend.nudge(1);
+    check('changes show immediately', backend.state.fan_speed === 'HIGH' && backend.state.mode === 'AUTO' &&
+        backend.shownTarget === 23, `${backend.state.fan_speed} ${backend.state.mode} ${backend.shownTarget}`);
+    check('status says sending', backend.message === 'Sending…', backend.message);
+});
+
+after(12000, () => {
+    check('read-back confirms changes', backend.state.fan_speed === 'HIGH' && backend.state.mode === 'AUTO' &&
+        backend.state.target_temp === 23, JSON.stringify(backend.state));
+    check('status up to date', backend.message === 'Up to date', backend.message);
+    backend.setFan('TURBO');
+    check('rejected value shown optimistically', backend.state.fan_speed === 'TURBO');
+});
+
+after(17000, () => {
+    check('error reported', backend.errorShown && backend.message.includes('TURBO'), backend.message);
+    check('real state restored', backend.state.fan_speed === 'HIGH', backend.state.fan_speed);
+    backend.destroy();
+    loop.quit();
+});
+
+loop.run();
+GLib.spawn_command_line_sync(`rm -rf ${cache}`);
+print(failures ? `${failures} FAILED` : 'all passed');
+if (failures)
+    System.exit(1);

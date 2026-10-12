@@ -63,8 +63,14 @@ class AcController:
             if d.get("deviceInfo", {}).get("deviceType") == AIR_CONDITIONER
         ]
 
-    async def connect(self, device: DeviceInfo) -> AcState:
-        profile = await self._api.async_get_device_profile(device.device_id)
+    async def connect(self, device: DeviceInfo, profile: dict | None = None) -> AcState:
+        await self.load(device, profile)
+        return await self.refresh()
+
+    async def load(self, device: DeviceInfo, profile: dict | None = None) -> dict:
+        """Set up the device from its profile (fetched if not given) without reading its status."""
+        if profile is None:
+            profile = await self._api.async_get_device_profile(device.device_id)
         self._device = AirConditionerDevice(
             thinq_api=self._api,
             device_id=device.device_id,
@@ -75,7 +81,7 @@ class AcController:
             profile=profile,
         )
         self._unit = "C" if self._readable(P.TARGET_TEMPERATURE_C) or self._readable(P.CURRENT_TEMPERATURE_C) else "F"
-        return await self.refresh()
+        return profile
 
     async def refresh(self) -> AcState:
         device = self._require_device()
