@@ -1,0 +1,40 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install system libraries (Qt needs them even off-screen; gjs runs the GNOME tests)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3 gjs
+
+      - name: Install the app
+        run: pip install -e .
+
+      - name: Python tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QT_QUICK_BACKEND: software
+        run: python -m unittest discover -s tests -t . -v
+
+      - name: GNOME extension backend tests
+        env:
+          LG_AC_CLI: lg-ac-cli
+        run: gjs -m tests/test_gnome_backend.js
+
+      - name: Check install scripts parse
+        run: for f in scripts/*.sh; do bash -n "$f"; done

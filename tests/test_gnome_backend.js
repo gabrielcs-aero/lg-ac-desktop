@@ -6,7 +6,9 @@ import {AcBackend} from '../widgets/gnome/lg-ac@gabrielcs-aero.github.io/backend
 
 const repo = GLib.path_get_dirname(GLib.path_get_dirname(GLib.filename_from_uri(import.meta.url)[0]));
 const cache = GLib.dir_make_tmp('lg-ac-test-XXXXXX');
-const cli = `env XDG_CACHE_HOME=${cache} ${repo}/.venv/bin/lg-ac-cli --demo`;
+// LG_AC_CLI overrides where lg-ac-cli lives (CI installs it on PATH).
+const cliPath = GLib.getenv('LG_AC_CLI') || `${repo}/.venv/bin/lg-ac-cli`;
+const cli = `env XDG_CACHE_HOME=${cache} ${cliPath} --demo`;
 
 const loop = new GLib.MainLoop(null, false);
 let failures = 0;
