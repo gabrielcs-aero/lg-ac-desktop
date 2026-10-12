@@ -1,0 +1,35 @@
+.lg-ac-panel { spacing: 4px; }
+
+.lg-ac-title { font-weight: bold; }
+.lg-ac-room { font-size: 0.9em; color: rgba(255, 255, 255, 0.6); padding-top: 0; }
+
+.lg-ac-temp-row { spacing: 12px; padding: 4px 0; }
+.lg-ac-target { font-size: 2.2em; font-weight: 300; }
+.lg-ac-caption { font-size: 0.8em; color: rgba(255, 255, 255, 0.6); }
+
+.lg-ac-step {
+    width: 40px;
+    height: 40px;
+    border-radius: 20px;
+    font-size: 1.4em;
+    background-color: rgba(255, 255, 255, 0.08);
+}
+.lg-ac-step:hover { background-color: rgba(255, 255, 255, 0.16); }
+.lg-ac-step:active { background-color: rgba(255, 255, 255, 0.24); }
+
+.lg-ac-mode-row { spacing: 6px; }
+.lg-ac-mode {
+    min-width: 64px;
+    padding: 8px 4px;
+    border-radius: 12px;
+    background-color: rgba(255, 255, 255, 0.06);
+    transition-duration: 150ms;
+}
+.lg-ac-mode:hover { background-color: rgba(255, 255, 255, 0.12); }
+.lg-ac-mode-label { font-size: 0.85em; padding-top: 4px; }
+
+.lg-ac-fan-value { font-weight: bold; }
+.lg-ac-status { font-size: 0.85em; color: rgba(255, 255, 255, 0.6); }
+.lg-ac-status.lg-ac-error { color: #ff7b63; }
+.lg-ac-icon-button { padding: 4px; border-radius: 99px; }
+.lg-ac-icon-button:hover { background-color: rgba(255, 255, 255, 0.12); }

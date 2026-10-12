@@ -1,0 +1,9 @@
+{
+    "uuid": "lg-ac@gabrielcs-aero.github.io",
+    "name": "LG Air Conditioner",
+    "description": "Control an LG ThinQ air conditioner from the top bar: power, mode, temperature and fan speed. Needs the lg-ac-desktop app installed.",
+    "shell-version": ["45", "46", "47", "48", "49"],
+    "url": "https://github.com/gabrielcs-aero/lg-ac-desktop",
+    "settings-schema": "org.gnome.shell.extensions.lg-ac",
+    "version-name": "0.2"
+}

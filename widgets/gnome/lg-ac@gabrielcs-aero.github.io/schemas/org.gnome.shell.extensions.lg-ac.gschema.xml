@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.lg-ac" path="/org/gnome/shell/extensions/lg-ac/">
+    <!-- The install script replaces these defaults with absolute paths. -->
+    <key name="command" type="s">
+      <default>'lg-ac-cli'</default>
+      <summary>Command used to talk to the air conditioner</summary>
+    </key>
+    <key name="app-command" type="s">
+      <default>'lg-ac'</default>
+      <summary>Command that opens the desktop app</summary>
+    </key>
+    <key name="poll-seconds" type="i">
+      <default>60</default>
+      <summary>How often to refresh the status, in seconds</summary>
+    </key>
+  </schema>
+</schemalist>

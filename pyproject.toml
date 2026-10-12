@@ -17,6 +17,10 @@ dependencies = [
 
 [project.scripts]
 lg-ac = "lg_ac.app:main"
+lg-ac-cli = "lg_ac.cli:main"
 
 [tool.setuptools]
 packages = ["lg_ac"]
+
+[tool.setuptools.package-data]
+lg_ac = ["icons/*.svg", "qml/*.qml"]
