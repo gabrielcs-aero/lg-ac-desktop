@@ -12,6 +12,7 @@ Every command prints one line of JSON: {"ok": true, ...} or {"ok": false, "error
     lg-ac-cli display on|off
     lg-ac-cli timer start|stop|sleep MINUTES     (0 cancels)
     lg-ac-cli preset sleep|max_cool|eco
+    lg-ac-cli watch [--timeout SECONDS]           (waits for a change pushed by LG)
 
 Add --demo to talk to a simulated unit instead of the real one.
 """
@@ -29,19 +30,15 @@ from pathlib import Path
 import aiohttp
 from thinqconnect import ThinQApi, ThinQAPIException
 
-from .config import load_config
+from .config import cache_dir, load_config
 from .controller import AcController, AcState, DeviceInfo
 from .demo import DemoApi
+from .live import LiveUpdates, live_client_id
 from .presets import get_preset, plan, presets_for
 from .text import describe_error, pretty
 
 # Errors meaning the cached device is no longer valid for this account.
 _STALE_DEVICE_CODES = {"1205", "1211", "1212", "1213", "1224"}
-
-
-def cache_dir() -> Path:
-    base = os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache"
-    return Path(base) / "lg-ac-desktop"
 
 
 def _read_json(path: Path):
@@ -93,6 +90,8 @@ async def run(args: argparse.Namespace) -> dict:
         api.status = _read_json(demo_file) or api.status
         controller = AcController(api)
         device = await _load_device(controller, "", cache / "demo-device.json")
+        if args.command == "watch":
+            return await _watch_demo(controller, device, api, demo_file, args.timeout)
         result = await _execute(controller, device, args)
         _write_json(demo_file, api.status)
         return result
@@ -111,11 +110,60 @@ async def run(args: argparse.Namespace) -> dict:
         device_file = cache / "device.json"
         device = await _load_device(controller, config.device_id, device_file)
         try:
+            if args.command == "watch":
+                return await _watch(controller, device, config, session, args.timeout)
             return await _execute(controller, device, args)
         except ThinQAPIException as error:
             if str(error.code) in _STALE_DEVICE_CODES:
                 device_file.unlink(missing_ok=True)
             raise
+
+
+async def _watch(controller: AcController, device: DeviceInfo, config, session, timeout: float) -> dict:
+    """Wait up to `timeout` seconds for LG to push a change, then report the state."""
+    reports: list[dict] = []
+    arrived = asyncio.Event()
+
+    def on_report(report: dict) -> None:
+        reports.append(report)
+        arrived.set()
+
+    live = LiveUpdates(
+        session, config.access_token, config.country_code, live_client_id(config.client_id, "cli"),
+        device.device_id, on_report, store_dir=cache_dir() / "mqtt-cli",
+    )
+    if not await live.start():
+        raise RuntimeError("Live updates aren't available right now.")
+    try:
+        state = await controller.refresh()
+        reports.clear()  # anything before the refresh is already included in it
+        arrived.clear()
+        try:
+            await asyncio.wait_for(arrived.wait(), timeout)
+        except TimeoutError:
+            return {"ok": True, "changed": False, "state": state_to_json(device, state)}
+        await asyncio.sleep(1)  # a single change often arrives as a few reports
+        for report in reports:
+            state = controller.apply_report(report)
+        return {"ok": True, "changed": True, "state": state_to_json(device, state)}
+    finally:
+        await live.stop()
+
+
+async def _watch_demo(controller: AcController, device: DeviceInfo, api: DemoApi, demo_file: Path, timeout: float) -> dict:
+    """--demo stand-in for live updates: wait for another command to change the demo state."""
+    def mtime():
+        return demo_file.stat().st_mtime_ns if demo_file.exists() else 0
+
+    before = mtime()
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while mtime() == before and loop.time() < deadline:
+        await asyncio.sleep(0.25)
+    changed = mtime() != before
+    if changed:
+        api.status = _read_json(demo_file) or api.status
+    return {"ok": True, "changed": changed, "state": state_to_json(device, await controller.refresh())}
 
 
 async def _execute(controller: AcController, device: DeviceInfo, args: argparse.Namespace) -> dict:
@@ -163,6 +211,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     timer.add_argument("kind", choices=["start", "stop", "sleep"], help="start: turn on, stop: turn off, sleep: sleep timer")
     timer.add_argument("minutes", type=int)
     commands.add_parser("preset", help="apply a preset").add_argument("value")
+    watch = commands.add_parser("watch", help="wait for a change pushed by LG, then print the state")
+    watch.add_argument("--timeout", type=float, default=540, help="seconds to wait (default 540)")
     return parser.parse_args(argv)
 
 

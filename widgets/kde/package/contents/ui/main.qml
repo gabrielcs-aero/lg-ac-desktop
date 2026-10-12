@@ -29,6 +29,8 @@ PlasmoidItem {
     property bool statusRunning: false
     property var jobs: ({})
     property bool timerPanelOpen: false
+    property bool live: false           // LG is pushing changes to us (via `lg-ac-cli watch`)
+    property bool watchRunning: false
 
     readonly property var timerVerbs: ({ stop: i18n("Off in"), start: i18n("On in"), sleep: i18n("Sleep, off in") })
     readonly property var activeTimers: ready ? ["stop", "sleep", "start"].filter(k => acState["timer_" + k] !== null && acState["timer_" + k] !== undefined) : []
@@ -97,6 +99,13 @@ PlasmoidItem {
         return cmd
     }
 
+    // Long-poll for changes pushed by LG; restarts itself after each change or timeout.
+    function watch() {
+        if (watchRunning) return
+        watchRunning = true
+        run("watch", ["watch", "--timeout", "540"])
+    }
+
     function refresh() {
         if (statusRunning) return
         statusRunning = true
@@ -124,6 +133,17 @@ PlasmoidItem {
     }
 
     function finished(job, result) {
+        if (job.kind === "watch") {
+            watchRunning = false
+            live = result.ok === true
+            if (!result.ok) { watchRetry.restart(); return }
+            if (result.changed && pendingCommands === 0 && isNaN(pendingTarget)) {
+                acState = result.state
+                if (!errorShown) message = i18n("Up to date")
+            }
+            Qt.callLater(watch)
+            return
+        }
         if (job.kind === "status") {
             statusRunning = false
             if (!result.ok) { showError(result.error); return }
@@ -190,8 +210,11 @@ PlasmoidItem {
             root.send("temp", ["temp", value, "--mode", root.acState.mode], { target_temp: value })
         }
     }
+    Timer { id: watchRetry; interval: 5 * 60 * 1000; onTriggered: root.watch() }
+    Component.onCompleted: watch()
     Timer {
-        interval: Math.max(15, Plasmoid.configuration.pollSeconds) * 1000
+        // While live, polling is only a safety net.
+        interval: root.live ? 5 * 60 * 1000 : Math.max(15, Plasmoid.configuration.pollSeconds) * 1000
         running: true
         repeat: true
         triggeredOnStart: true
@@ -252,10 +275,27 @@ PlasmoidItem {
                         elide: Text.ElideRight
                         Layout.fillWidth: true
                     }
-                    PlasmaComponents.Label {
-                        text: root.ready ? i18n("Room %1%2", root.formatTemp(root.acState.current_temp), root.unit) : ""
-                        opacity: 0.7
-                        font: Kirigami.Theme.smallFont
+                    RowLayout {
+                        spacing: Kirigami.Units.smallSpacing
+                        PlasmaComponents.Label {
+                            text: root.ready ? i18n("Room %1%2", root.formatTemp(root.acState.current_temp), root.unit) : ""
+                            opacity: 0.7
+                            font: Kirigami.Theme.smallFont
+                        }
+                        Rectangle {
+                            visible: root.live
+                            width: Kirigami.Units.smallSpacing * 1.5
+                            height: width
+                            radius: width / 2
+                            color: "#10b981"
+                        }
+                        PlasmaComponents.Label {
+                            visible: root.live
+                            text: i18n("Live")
+                            color: "#10b981"
+                            font: Kirigami.Theme.smallFont
+                            PlasmaComponents.ToolTip { text: i18n("Changes made with the remote or the ThinQ app show up here right away.") }
+                        }
                     }
                 }
                 PlasmaComponents.Switch {

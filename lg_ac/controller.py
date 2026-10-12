@@ -121,6 +121,17 @@ class AcController:
         self._status = status or {}
         return self.state()
 
+    def apply_report(self, report: dict) -> AcState:
+        """Merge a partial status pushed by LG (see live.py) and return the new state."""
+        device = self._require_device()
+        device.update_status(report)
+        for resource, values in report.items():
+            if isinstance(values, dict) and isinstance(self._status.get(resource), dict):
+                self._status[resource] = {**self._status[resource], **values}
+            else:
+                self._status[resource] = values
+        return self.state()
+
     def state(self) -> AcState:
         device = self._require_device()
         unit = self._unit

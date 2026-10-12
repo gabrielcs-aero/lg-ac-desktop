@@ -59,6 +59,16 @@ after(30000, () => {
         backend.state.power_save === true && backend.state.target_temp === 26, JSON.stringify(backend.state));
     const eco = backend.state.presets.find(p => p.id === 'eco');
     check('eco preset now active', backend.presetActive(eco), JSON.stringify(eco.changes));
+    backend.startWatching();
+});
+
+after(32000, () => {
+    // Someone else changes the unit; the watch loop should pick it up without a refresh.
+    GLib.spawn_command_line_async(`${cli} mode AUTO`);
+});
+
+after(38000, () => {
+    check('live update arrives without a refresh', backend.state.mode === 'AUTO' && backend.live, `${backend.state.mode} live=${backend.live}`);
     backend.destroy();
     loop.quit();
 });

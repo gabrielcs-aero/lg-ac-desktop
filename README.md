@@ -20,6 +20,8 @@ Built and tested against a wall-mounted unit (model S3NQ09AM31A), but it reads e
 
 **Presets:** *Sleep* (25°, quiet fan, display off, off after 8 h), *Max cool* (coldest setting, full fan, swing) and *Eco* (26°, low fan, power save). A preset only changes what your unit supports, and it lights up when the unit already matches it.
 
+**Live updates:** changes made with the remote or the ThinQ phone app show up within seconds, through LG's push service (a green **Live** marker appears when it's connected). If push isn't available, everything falls back to checking every minute.
+
 Changes show up instantly and are sent in the background, one at a time and in order. A few seconds after your last change the unit is read back to confirm, and anything LG rejected is undone.
 
 ## Install
@@ -79,9 +81,10 @@ The widgets use `lg-ac-cli`, which you can also call yourself. Each command prin
 .venv/bin/lg-ac-cli display off
 .venv/bin/lg-ac-cli timer stop 90     # turn off in 90 minutes (start / stop / sleep; 0 cancels)
 .venv/bin/lg-ac-cli preset sleep      # sleep / max_cool / eco
+.venv/bin/lg-ac-cli watch             # wait for a change pushed by LG (used by the widgets)
 ```
 
-It caches your unit's profile in `~/.cache/lg-ac-desktop/` so each call needs only one request to LG.
+It caches your unit's profile in `~/.cache/lg-ac-desktop/` so each call needs only one request to LG. The certificates for live updates are kept there too, readable only by you.
 
 
 

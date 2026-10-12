@@ -73,11 +73,15 @@ class LgAcIndicator extends PanelMenu.Button {
         });
 
         const poll = Math.max(15, this._settings.get_int('poll-seconds'));
+        let ticks = 0;
         this._pollId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, poll, () => {
-            this._backend.refresh();
+            // While LG pushes changes to us, polling is only a safety net: every 5th tick.
+            if (!this._backend.live || ++ticks % 5 === 0)
+                this._backend.refresh();
             return GLib.SOURCE_CONTINUE;
         });
         this._backend.refresh();
+        this._backend.startWatching();
         this._sync();
     }
 
@@ -345,7 +349,7 @@ class LgAcIndicator extends PanelMenu.Button {
         this._power.label.text = s?.alias ?? 'Air conditioner';
         this._power.setToggleState(b.isOn);
         this._power.setSensitive(b.ready);
-        this._room.label.text = s ? `Room ${formatTemp(s.current_temp)}°${s.unit}` : '';
+        this._room.label.text = s ? `Room ${formatTemp(s.current_temp)}°${s.unit}${b.live ? '  ·  ● Live' : ''}` : '';
 
         this._targetLabel.text = s ? `${formatTemp(b.shownTarget)}°${s.unit}` : '–';
         this._targetLabel.opacity = b.isOn ? 255 : 128;
