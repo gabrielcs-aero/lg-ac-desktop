@@ -7,8 +7,8 @@ import QtQuick.Shapes
 
 ApplicationWindow {
     id: win
-    width: 400
-    height: 780
+    width: 880
+    height: 600
     minimumWidth: 360
     minimumHeight: 560
     visible: true
@@ -17,6 +17,7 @@ ApplicationWindow {
 
     // ---------- theme ----------
     // Follows the desktop's light/dark setting; LG_AC_THEME=dark|light overrides it.
+    readonly property bool wide: width >= 760
     readonly property bool dark: themeOverride === "dark" || (themeOverride !== "light" && Qt.styleHints.colorScheme === Qt.Dark)
     QtObject {
         id: t
@@ -91,7 +92,7 @@ ApplicationWindow {
                                 font.pixelSize: 20
                                 font.weight: Font.DemiBold
                                 elide: Text.ElideRight
-                                Layout.maximumWidth: 220
+                                Layout.maximumWidth: win.wide ? 420 : 220
                             }
                             Rectangle {
                                 visible: acModel.isDemo
@@ -133,6 +134,7 @@ ApplicationWindow {
                             font.pixelSize: 13
                         }
                     }
+                    Item { Layout.fillWidth: true }
                     IconButton { source: win.iconUrl("settings"); onClicked: acModel.openSetup(); Accessible.name: "Settings" }
                     PowerSwitch {}
                 }
@@ -160,194 +162,216 @@ ApplicationWindow {
                     }
                 }
 
-                // Dial
-                Item {
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: 250
-
-                    Item {
-                        id: dial
-                        width: 230
-                        height: 230
-                        anchors.centerIn: parent
-                        readonly property real lineWidth: 14
-                        readonly property real fraction: {
-                            if (!ready || ac.shown_target === null || ac.temp_min === null) return 0
-                            return Math.max(0, Math.min(1, (ac.shown_target - ac.temp_min) / (ac.temp_max - ac.temp_min)))
-                        }
-                        property real shownFraction: fraction
-                        Behavior on shownFraction { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } }
-
-                        Shape {
-                            anchors.fill: parent
-                            layer.enabled: true
-                            layer.samples: 4
-                            ShapePath {
-                                strokeColor: t.track
-                                strokeWidth: dial.lineWidth
-                                fillColor: "transparent"
-                                capStyle: ShapePath.RoundCap
-                                PathAngleArc {
-                                    centerX: dial.width / 2; centerY: dial.height / 2
-                                    radiusX: dial.width / 2 - dial.lineWidth; radiusY: radiusX
-                                    startAngle: 135; sweepAngle: 270
-                                }
-                            }
-                            ShapePath {
-                                strokeColor: win.accent
-                                strokeWidth: dial.lineWidth
-                                fillColor: "transparent"
-                                capStyle: ShapePath.RoundCap
-                                PathAngleArc {
-                                    centerX: dial.width / 2; centerY: dial.height / 2
-                                    radiusX: dial.width / 2 - dial.lineWidth; radiusY: radiusX
-                                    startAngle: 135; sweepAngle: Math.max(0.5, 270 * dial.shownFraction)
-                                }
-                            }
-                        }
-
-                        ColumnLayout {
-                            anchors.centerIn: parent
-                            spacing: 0
-                            Label {
-                                Layout.alignment: Qt.AlignHCenter
-                                text: ready ? win.fmt(ac.shown_target) + "°" : "–"
-                                color: isOn ? t.text : t.muted
-                                font.pixelSize: 64
-                                font.weight: Font.Light
-                            }
-                            Label {
-                                Layout.alignment: Qt.AlignHCenter
-                                text: !ready ? "" : !isOn ? "Off" : ac.can_set_temp ? "Target · °" + ac.unit : "No target in " + win.label(ac.mode)
-                                color: t.muted
-                                font.pixelSize: 13
-                            }
-                        }
-                    }
-
-                    StepButton { text: "−"; direction: -1; anchors.verticalCenter: dial.verticalCenter; anchors.right: dial.left; anchors.rightMargin: -4 }
-                    StepButton { text: "+"; direction: 1; anchors.verticalCenter: dial.verticalCenter; anchors.left: dial.right; anchors.leftMargin: -4 }
-                }
-
-                // Presets
-                SectionLabel { text: "Presets"; visible: ready }
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 8
-                    visible: ready
-                    Repeater {
-                        model: ready ? ac.presets : []
-                        delegate: PresetPill {
-                            required property var modelData
-                            preset: modelData
-                            Layout.fillWidth: true
-                            Layout.preferredWidth: 1
-                        }
-                    }
-                }
-
-                SectionLabel { text: "Mode" }
-                // Modes
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 8
-                    Repeater {
-                        model: ready ? ac.modes : []
-                        delegate: ModeChip {
-                            required property string modelData
-                            mode: modelData
-                            Layout.fillWidth: true
-                        }
-                    }
-                }
-
-                // Fan speed
-                Rectangle {
-                    Layout.fillWidth: true
-                    implicitHeight: fanColumn.implicitHeight + 28
-                    radius: 16
-                    color: t.card
-                    opacity: isOn ? 1 : 0.6
-                    ColumnLayout {
-                        id: fanColumn
-                        anchors.fill: parent
-                        anchors.margins: 14
-                        spacing: 10
-                        RowLayout {
-                            IconImage { source: win.iconUrl("mode-fan"); color: t.muted; sourceSize: Qt.size(18, 18) }
-                            Label { text: "Fan speed"; color: t.muted; font.pixelSize: 13; Layout.fillWidth: true }
-                            Label { text: ready ? win.label(fanSlider.speed) : ""; color: t.text; font.pixelSize: 14; font.weight: Font.DemiBold }
-                        }
-                        FanSlider { id: fanSlider; Layout.fillWidth: true }
-                    }
-                }
-
-                // Extras
-                SectionLabel { text: "More"; visible: ready }
+                // Two columns on a wide window (dial + presets | controls), one when narrow.
                 GridLayout {
                     Layout.fillWidth: true
-                    visible: ready
-                    columns: 2
-                    columnSpacing: 10
-                    rowSpacing: 10
-                    ToggleTile {
-                        title: "Swing"
-                        iconName: "swing"
-                        tint: "#0ea5e9"
-                        visible: ready && ac.can_swing
-                        on: ready && ac.swing === true
-                        subtitle: on ? "Up and down" : "Off"
-                        enabled: isOn
-                        onClicked: acModel.setSwing(!on)
-                    }
-                    ToggleTile {
-                        title: "Power save"
-                        iconName: "power-save"
-                        tint: "#10b981"
-                        visible: ready && ac.can_power_save
-                        on: ready && ac.power_save === true
-                        subtitle: on ? "On" : "Off"
-                        enabled: isOn
-                        onClicked: acModel.setPowerSave(!on)
-                    }
-                    ToggleTile {
-                        title: "Display"
-                        iconName: "display"
-                        tint: "#f59e0b"
-                        visible: ready && ac.can_display_light
-                        on: ready && ac.display_light === true
-                        subtitle: on ? "Light on" : "Light off"
-                        enabled: isOn
-                        onClicked: acModel.setDisplayLight(!on)
-                    }
-                    ToggleTile {
-                        title: "Timer"
-                        iconName: "timer"
-                        tint: "#8b5cf6"
-                        visible: ready && ac.timers.length > 0
-                        on: win.activeTimers.length > 0
-                        subtitle: on ? win.timerText(win.activeTimers[0]) : "Not set"
-                        onClicked: timerPopup.open()
-                    }
-                }
+                    columns: win.wide ? 2 : 1
+                    columnSpacing: 32
+                    rowSpacing: 14
 
-                // Filter
-                RowLayout {
-                    Layout.fillWidth: true
-                    visible: ready && ac.filter_used_hours !== null && ac.filter_used_hours !== undefined
-                    spacing: 8
-                    opacity: 0.85
-                    IconImage { source: win.iconUrl("filter"); color: t.muted; sourceSize: Qt.size(16, 16) }
-                    Label {
+                    ColumnLayout {
                         Layout.fillWidth: true
-                        color: t.muted
-                        font.pixelSize: 12
-                        text: {
-                            if (!ready) return ""
-                            let s = "Filter used " + ac.filter_used_hours + " h"
-                            if (ac.filter_lifetime_hours)
-                                s += " · " + Math.max(0, Math.round(100 - 100 * ac.filter_used_hours / ac.filter_lifetime_hours)) + "% left"
-                            return s
+                        Layout.preferredWidth: 1
+                        Layout.alignment: Qt.AlignTop
+                        spacing: 14
+
+                        // Dial
+                        Item {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 250
+
+                            Item {
+                                id: dial
+                                width: 230
+                                height: 230
+                                anchors.centerIn: parent
+                                readonly property real lineWidth: 14
+                                readonly property real fraction: {
+                                    if (!ready || ac.shown_target === null || ac.temp_min === null) return 0
+                                    return Math.max(0, Math.min(1, (ac.shown_target - ac.temp_min) / (ac.temp_max - ac.temp_min)))
+                                }
+                                property real shownFraction: fraction
+                                Behavior on shownFraction { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } }
+
+                                Shape {
+                                    anchors.fill: parent
+                                    layer.enabled: true
+                                    layer.samples: 4
+                                    ShapePath {
+                                        strokeColor: t.track
+                                        strokeWidth: dial.lineWidth
+                                        fillColor: "transparent"
+                                        capStyle: ShapePath.RoundCap
+                                        PathAngleArc {
+                                            centerX: dial.width / 2; centerY: dial.height / 2
+                                            radiusX: dial.width / 2 - dial.lineWidth; radiusY: radiusX
+                                            startAngle: 135; sweepAngle: 270
+                                        }
+                                    }
+                                    ShapePath {
+                                        strokeColor: win.accent
+                                        strokeWidth: dial.lineWidth
+                                        fillColor: "transparent"
+                                        capStyle: ShapePath.RoundCap
+                                        PathAngleArc {
+                                            centerX: dial.width / 2; centerY: dial.height / 2
+                                            radiusX: dial.width / 2 - dial.lineWidth; radiusY: radiusX
+                                            startAngle: 135; sweepAngle: Math.max(0.5, 270 * dial.shownFraction)
+                                        }
+                                    }
+                                }
+
+                                ColumnLayout {
+                                    anchors.centerIn: parent
+                                    spacing: 0
+                                    Label {
+                                        Layout.alignment: Qt.AlignHCenter
+                                        text: ready ? win.fmt(ac.shown_target) + "°" : "–"
+                                        color: isOn ? t.text : t.muted
+                                        font.pixelSize: 64
+                                        font.weight: Font.Light
+                                    }
+                                    Label {
+                                        Layout.alignment: Qt.AlignHCenter
+                                        text: !ready ? "" : !isOn ? "Off" : ac.can_set_temp ? "Target · °" + ac.unit : "No target in " + win.label(ac.mode)
+                                        color: t.muted
+                                        font.pixelSize: 13
+                                    }
+                                }
+                            }
+
+                            StepButton { text: "−"; direction: -1; anchors.verticalCenter: dial.verticalCenter; anchors.right: dial.left; anchors.rightMargin: -4 }
+                            StepButton { text: "+"; direction: 1; anchors.verticalCenter: dial.verticalCenter; anchors.left: dial.right; anchors.leftMargin: -4 }
+                        }
+
+                        // Presets
+                        SectionLabel { text: "Presets"; visible: ready }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+                            visible: ready
+                            Repeater {
+                                model: ready ? ac.presets : []
+                                delegate: PresetPill {
+                                    required property var modelData
+                                    preset: modelData
+                                    Layout.fillWidth: true
+                                    Layout.preferredWidth: 1
+                                }
+                            }
+                        }
+                    }
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        Layout.preferredWidth: 1
+                        Layout.alignment: Qt.AlignTop
+                        spacing: 14
+
+                        SectionLabel { text: "Mode" }
+                        // Modes
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+                            Repeater {
+                                model: ready ? ac.modes : []
+                                delegate: ModeChip {
+                                    required property string modelData
+                                    mode: modelData
+                                    Layout.fillWidth: true
+                                }
+                            }
+                        }
+
+                        // Fan speed
+                        Rectangle {
+                            Layout.fillWidth: true
+                            implicitHeight: fanColumn.implicitHeight + 28
+                            radius: 16
+                            color: t.card
+                            opacity: isOn ? 1 : 0.6
+                            ColumnLayout {
+                                id: fanColumn
+                                anchors.fill: parent
+                                anchors.margins: 14
+                                spacing: 10
+                                RowLayout {
+                                    IconImage { source: win.iconUrl("mode-fan"); color: t.muted; sourceSize: Qt.size(18, 18) }
+                                    Label { text: "Fan speed"; color: t.muted; font.pixelSize: 13; Layout.fillWidth: true }
+                                    Label { text: ready ? win.label(fanSlider.speed) : ""; color: t.text; font.pixelSize: 14; font.weight: Font.DemiBold }
+                                }
+                                FanSlider { id: fanSlider; Layout.fillWidth: true }
+                            }
+                        }
+
+                        // Extras
+                        SectionLabel { text: "More"; visible: ready }
+                        GridLayout {
+                            Layout.fillWidth: true
+                            visible: ready
+                            columns: 2
+                            columnSpacing: 10
+                            rowSpacing: 10
+                            ToggleTile {
+                                title: "Swing"
+                                iconName: "swing"
+                                tint: "#0ea5e9"
+                                visible: ready && ac.can_swing
+                                on: ready && ac.swing === true
+                                subtitle: on ? "Up and down" : "Off"
+                                enabled: isOn
+                                onClicked: acModel.setSwing(!on)
+                            }
+                            ToggleTile {
+                                title: "Power save"
+                                iconName: "power-save"
+                                tint: "#10b981"
+                                visible: ready && ac.can_power_save
+                                on: ready && ac.power_save === true
+                                subtitle: on ? "On" : "Off"
+                                enabled: isOn
+                                onClicked: acModel.setPowerSave(!on)
+                            }
+                            ToggleTile {
+                                title: "Display"
+                                iconName: "display"
+                                tint: "#f59e0b"
+                                visible: ready && ac.can_display_light
+                                on: ready && ac.display_light === true
+                                subtitle: on ? "Light on" : "Light off"
+                                enabled: isOn
+                                onClicked: acModel.setDisplayLight(!on)
+                            }
+                            ToggleTile {
+                                title: "Timer"
+                                iconName: "timer"
+                                tint: "#8b5cf6"
+                                visible: ready && ac.timers.length > 0
+                                on: win.activeTimers.length > 0
+                                subtitle: on ? win.timerText(win.activeTimers[0]) : "Not set"
+                                onClicked: timerPopup.open()
+                            }
+                        }
+
+                        // Filter
+                        RowLayout {
+                            Layout.fillWidth: true
+                            visible: ready && ac.filter_used_hours !== null && ac.filter_used_hours !== undefined
+                            spacing: 8
+                            opacity: 0.85
+                            IconImage { source: win.iconUrl("filter"); color: t.muted; sourceSize: Qt.size(16, 16) }
+                            Label {
+                                Layout.fillWidth: true
+                                color: t.muted
+                                font.pixelSize: 12
+                                text: {
+                                    if (!ready) return ""
+                                    let s = "Filter used " + ac.filter_used_hours + " h"
+                                    if (ac.filter_lifetime_hours)
+                                        s += " · " + Math.max(0, Math.round(100 - 100 * ac.filter_used_hours / ac.filter_lifetime_hours)) + "% left"
+                                    return s
+                                }
+                            }
                         }
                     }
                 }

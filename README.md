@@ -10,9 +10,11 @@ Control an LG ThinQ air conditioner from your Linux desktop: power, mode, temper
 - **KDE Plasma widget**: sits in your panel, shows the current temperature, and opens the controls with a click.
 - **GNOME Shell extension**: the same idea for the GNOME top bar.
 
-| App | More controls | Timer | KDE Plasma widget |
-| --- | --- | --- | --- |
-| ![App in dark mode](docs/app-dark.png) | ![Presets, swing, power save, display and timer tiles in light mode](docs/app-light.png) | ![Timer sheet](docs/app-timer.png) | ![KDE Plasma widget](docs/kde-widget.png) |
+![The app in dark mode](docs/app-dark.png)
+
+| Light mode | Timer | KDE Plasma widget |
+| --- | --- | --- |
+| ![The app in light mode](docs/app-light.png) | ![Timer sheet](docs/app-timer.png) | ![KDE Plasma widget](docs/kde-widget.png) |
 
 It talks to LG's official [ThinQ Connect API](https://smartsolution.developer.lge.com/en/apiManage/thinq_connect) through LG's [`thinqconnect`](https://github.com/thinq-connect/pythinqconnect) Python SDK. It uses a Personal Access Token that you create and can revoke at any time.
 

@@ -257,7 +257,8 @@ PlasmoidItem {
     fullRepresentation: PlasmaExtras.Representation {
         Layout.minimumWidth: Kirigami.Units.gridUnit * 19
         Layout.preferredWidth: Kirigami.Units.gridUnit * 21
-        Layout.minimumHeight: Kirigami.Units.gridUnit * 12
+        // Never shorter than the content, so rows can't be squeezed on top of each other.
+        Layout.minimumHeight: root.ready ? controls.implicitHeight + Kirigami.Units.largeSpacing * 2 + Kirigami.Units.gridUnit * 3 : Kirigami.Units.gridUnit * 12
         Layout.preferredHeight: root.ready ? controls.implicitHeight + Kirigami.Units.largeSpacing * 2 + Kirigami.Units.gridUnit * 3 : Kirigami.Units.gridUnit * 16
         collapseMarginsHint: true
 
@@ -335,64 +336,42 @@ PlasmoidItem {
                 text: i18n("The unit reports a fault. Check it, or look in the ThinQ app for details.")
             }
 
-            // Temperature dial with −/+ on either side
+            // Target temperature with −/+ on either side
             RowLayout {
                 Layout.fillWidth: true
-                Layout.preferredHeight: Kirigami.Units.gridUnit * 10
+                spacing: Kirigami.Units.largeSpacing
 
                 Item { Layout.fillWidth: true }
                 StepButton { text: "−"; direction: -1; Accessible.name: i18n("Lower temperature") }
 
-                Item {
-                    Layout.preferredWidth: Kirigami.Units.gridUnit * 10
-                    Layout.fillHeight: true
-
-                Canvas {
-                    id: dial
-                    readonly property real size: Math.min(width, height)
-                    readonly property real fraction: {
-                        if (!root.ready || isNaN(root.shownTarget) || root.acState.temp_min === null) return 0
-                        return (root.shownTarget - root.acState.temp_min) / (root.acState.temp_max - root.acState.temp_min)
-                    }
-                    readonly property color accent: root.isOn && root.ready ? root.colorFor(root.acState.mode) : Kirigami.Theme.disabledTextColor
-                    anchors.centerIn: parent
-                    width: Kirigami.Units.gridUnit * 10
-                    height: width
-                    onFractionChanged: requestPaint()
-                    onAccentChanged: requestPaint()
-                    onPaint: {
-                        const ctx = getContext("2d")
-                        const line = Kirigami.Units.gridUnit * 0.6
-                        const r = size / 2 - line
-                        const start = Math.PI * 0.75, sweep = Math.PI * 1.5
-                        ctx.reset()
-                        ctx.lineCap = "round"
-                        ctx.lineWidth = line
-                        ctx.strokeStyle = Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.12)
-                        ctx.beginPath(); ctx.arc(width / 2, height / 2, r, start, start + sweep); ctx.stroke()
-                        ctx.strokeStyle = accent
-                        ctx.beginPath(); ctx.arc(width / 2, height / 2, r, start, start + sweep * Math.max(0.01, fraction)); ctx.stroke()
-                    }
-                }
-
                 ColumnLayout {
-                    anchors.centerIn: dial
                     spacing: 0
+                    Layout.minimumWidth: Kirigami.Units.gridUnit * 7
                     PlasmaComponents.Label {
                         Layout.alignment: Qt.AlignHCenter
                         text: root.formatTemp(root.shownTarget) + root.unit
-                        font.pixelSize: Kirigami.Units.gridUnit * 2.6
+                        font.pixelSize: Kirigami.Units.gridUnit * 3
                         font.weight: Font.Light
                         opacity: root.isOn ? 1 : 0.5
                     }
-                    PlasmaComponents.Label {
+                    RowLayout {
                         Layout.alignment: Qt.AlignHCenter
-                        text: !root.ready ? "" : !root.isOn ? i18n("Off") : root.acState.can_set_temp ? i18n("Target") : i18n("No target in %1", root.label(root.acState.mode))
-                        opacity: 0.65
-                        font: Kirigami.Theme.smallFont
+                        spacing: Kirigami.Units.smallSpacing
+                        Rectangle {
+                            visible: root.isOn
+                            width: Kirigami.Units.smallSpacing * 1.5
+                            height: width
+                            radius: width / 2
+                            color: root.ready ? root.colorFor(root.acState.mode) : "transparent"
+                        }
+                        PlasmaComponents.Label {
+                            text: !root.ready ? "" : !root.isOn ? i18n("Off")
+                                : root.acState.can_set_temp ? i18n("Target · %1", root.label(root.acState.mode))
+                                : i18n("No target in %1", root.label(root.acState.mode))
+                            opacity: 0.65
+                            font: Kirigami.Theme.smallFont
+                        }
                     }
-                }
-
                 }
 
                 StepButton { text: "+"; direction: 1; Accessible.name: i18n("Raise temperature") }
