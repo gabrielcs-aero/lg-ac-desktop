@@ -20,6 +20,7 @@ from thinqconnect import ThinQApi
 from .config import Config, load_config, save_config
 from .controller import AcController, AcState, DeviceInfo
 from .demo import DemoApi
+from .presets import get_preset, plan, presets_for
 from .text import describe_error, pretty
 
 HERE = Path(__file__).resolve().parent
@@ -120,9 +121,11 @@ class AcModel(QObject):
     def ac(self) -> dict:
         if self.state is None:
             return {}
-        data = asdict(self.state)
+        # Tuples don't become JS arrays in QML, so hand over lists.
+        data = {k: list(v) if isinstance(v, tuple) else v for k, v in asdict(self.state).items()}
         data["labels"] = {v: pretty(v) for v in [*self.state.modes, *self.state.fan_speeds]}
         data["shown_target"] = self.pending_target if self.pending_target is not None else self.state.target_temp
+        data["presets"] = presets_for(self.state)
         return data
 
     @Property(bool, notify=changed)
@@ -280,6 +283,40 @@ class AcModel(QObject):
     def setFanSpeed(self, speed: str) -> None:
         if self.state and speed != self.state.fan_speed:
             self._send(self.controller.set_fan_speed(speed), fan_speed=speed)
+
+    @Slot(bool)
+    def setSwing(self, on: bool) -> None:
+        if self.state and self.state.can_swing and on != self.state.swing:
+            self._send(self.controller.set_swing(on), swing=on)
+
+    @Slot(bool)
+    def setPowerSave(self, on: bool) -> None:
+        if self.state and self.state.can_power_save and on != self.state.power_save:
+            self._send(self.controller.set_power_save(on), power_save=on)
+
+    @Slot(bool)
+    def setDisplayLight(self, on: bool) -> None:
+        if self.state and self.state.can_display_light and on != self.state.display_light:
+            self._send(self.controller.set_display_light(on), display_light=on)
+
+    @Slot(str, int)
+    def setTimer(self, kind: str, minutes: int) -> None:
+        """Start a countdown of `minutes` for kind start/stop/sleep; 0 cancels it."""
+        if not self.state or kind not in self.state.timers:
+            return
+        self._send(self.controller.set_timer(kind, minutes), **{f"timer_{kind}": minutes or None})
+
+    @Slot(str)
+    def applyPreset(self, preset_id: str) -> None:
+        if not self.state:
+            return
+        changes = plan(get_preset(preset_id), self.state)
+        if not changes:
+            self._set_message(f"Already on {get_preset(preset_id).name}")
+            return
+        self.pending_target = None
+        self.temp_timer.stop()
+        self._send(self.controller.apply(changes), **changes)
 
     @Slot(int)
     def nudge(self, direction: int) -> None:

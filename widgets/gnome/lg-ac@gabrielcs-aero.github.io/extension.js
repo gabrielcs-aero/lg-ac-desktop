@@ -21,10 +21,23 @@ import {AcBackend} from './backend.js';
 const MODE_ICONS = {COOL: 'mode-cool', HEAT: 'mode-heat', AIR_DRY: 'mode-dry', FAN: 'mode-fan', AUTO: 'mode-auto'};
 const MODE_COLORS = {COOL: '#3b82f6', HEAT: '#f97316', AIR_DRY: '#06b6d4', FAN: '#8b5cf6', AUTO: '#10b981'};
 const DEFAULT_COLOR = '#3b82f6';
+const PRESET_TINTS = {sleep: '#8b5cf6', max_cool: '#3b82f6', eco: '#10b981'};
+const TOGGLES = [
+    {command: 'swing', field: 'swing', can: 'can_swing', icon: 'swing', label: 'Swing', tint: '#0ea5e9'},
+    {command: 'power-save', field: 'power_save', can: 'can_power_save', icon: 'power-save', label: 'Power save', tint: '#10b981'},
+    {command: 'display', field: 'display_light', can: 'can_display_light', icon: 'display', label: 'Display', tint: '#f59e0b'},
+];
+const TIMER_VERBS = {stop: 'Off in', start: 'On in', sleep: 'Sleep, off in'};
+const DURATIONS = [30, 60, 120, 240, 360, 480];
 
 function hexToRgb(hex) {
     const n = parseInt(hex.slice(1), 16);
     return [(n >> 16) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+}
+
+function duration(minutes) {
+    const h = Math.floor(minutes / 60), m = minutes % 60;
+    return h && m ? `${h} h ${m} min` : h ? `${h} h` : `${m} min`;
 }
 
 function formatTemp(t) {
@@ -39,6 +52,9 @@ class LgAcIndicator extends PanelMenu.Button {
         this._settings = extension.getSettings();
         this._syncing = false;
         this._modeButtons = new Map();
+        this._presetButtons = new Map();
+        this._toggleButtons = new Map();
+        this._timerMenuKey = null;
 
         this._backend = new AcBackend(this._settings.get_string('command'), () => this._sync());
 
@@ -79,6 +95,11 @@ class LgAcIndicator extends PanelMenu.Button {
 
         this._room = new PopupMenu.PopupMenuItem('', {reactive: false, style_class: 'lg-ac-room'});
         this.menu.addMenuItem(this._room);
+
+        this._fault = new PopupMenu.PopupMenuItem('The unit reports a fault. Check it, or look in the ThinQ app.',
+            {reactive: false, style_class: 'lg-ac-fault'});
+        this._fault.label.clutter_text.line_wrap = true;
+        this.menu.addMenuItem(this._fault);
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
         // Temperature dial flanked by −/+
@@ -104,6 +125,12 @@ class LgAcIndicator extends PanelMenu.Button {
         tempItem.add_child(tempRow);
         this.menu.addMenuItem(tempItem);
 
+        // Presets (filled in once known)
+        const presetItem = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false});
+        this._presetRow = new St.BoxLayout({x_expand: true, style_class: 'lg-ac-preset-row'});
+        presetItem.add_child(this._presetRow);
+        this.menu.addMenuItem(presetItem);
+
         // Mode buttons (filled in once the modes are known)
         const modeItem = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false});
         this._modeRow = new St.BoxLayout({x_expand: true, style_class: 'lg-ac-mode-row'});
@@ -125,6 +152,22 @@ class LgAcIndicator extends PanelMenu.Button {
         fanItem.add_child(this._fanSlider);
         this.menu.addMenuItem(fanItem);
 
+        // Swing, power save, display
+        const toggleItem = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false});
+        const toggleRow = new St.BoxLayout({x_expand: true, style_class: 'lg-ac-toggle-row'});
+        for (const toggle of TOGGLES) {
+            const button = this._roundToggle(toggle);
+            this._toggleButtons.set(toggle.field, button);
+            toggleRow.add_child(button);
+        }
+        toggleItem.add_child(toggleRow);
+        this.menu.addMenuItem(toggleItem);
+
+        // Timer
+        this._timerMenu = new PopupMenu.PopupSubMenuMenuItem('Timer', true);
+        this._timerMenu.icon.gicon = this._icon('timer');
+        this.menu.addMenuItem(this._timerMenu);
+
         // Status line + refresh
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         const statusItem = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false});
@@ -138,6 +181,9 @@ class LgAcIndicator extends PanelMenu.Button {
         statusItem.add_child(this._status);
         statusItem.add_child(refresh);
         this.menu.addMenuItem(statusItem);
+
+        this._filter = new PopupMenu.PopupImageMenuItem('', this._icon('filter'), {reactive: false, style_class: 'lg-ac-filter'});
+        this.menu.addMenuItem(this._filter);
 
         const openApp = new PopupMenu.PopupMenuItem('Open LG AC app');
         openApp.connect('activate', () => this._openApp());
@@ -170,6 +216,66 @@ class LgAcIndicator extends PanelMenu.Button {
         });
         button.connect('clicked', () => this._backend.setMode(mode));
         return button;
+    }
+
+    _presetButton(preset) {
+        const content = new St.BoxLayout({x_align: Clutter.ActorAlign.CENTER, style_class: 'lg-ac-preset-content'});
+        const icon = new St.Icon({gicon: this._icon(preset.icon), icon_size: 14});
+        content.add_child(icon);
+        content.add_child(new St.Label({text: preset.name, y_align: Clutter.ActorAlign.CENTER}));
+        const button = new St.Button({child: content, style_class: 'lg-ac-preset', x_expand: true, accessible_name: preset.name});
+        button._icon = icon;
+        button._tint = PRESET_TINTS[preset.id] ?? DEFAULT_COLOR;
+        button.connect('clicked', () => {
+            const current = this._backend.state?.presets?.find(p => p.id === preset.id);
+            if (current)
+                this._backend.applyPreset(current);
+        });
+        return button;
+    }
+
+    _roundToggle(toggle) {
+        const box = new St.BoxLayout({vertical: true, x_align: Clutter.ActorAlign.CENTER, style_class: 'lg-ac-toggle-content'});
+        const circle = new St.Bin({style_class: 'lg-ac-toggle-circle', x_align: Clutter.ActorAlign.CENTER,
+            child: new St.Icon({gicon: this._icon(toggle.icon), icon_size: 18})});
+        box.add_child(circle);
+        box.add_child(new St.Label({text: toggle.label, style_class: 'lg-ac-toggle-label', x_align: Clutter.ActorAlign.CENTER}));
+        const button = new St.Button({child: box, style_class: 'lg-ac-toggle', x_expand: true, accessible_name: toggle.label});
+        button._circle = circle;
+        button.connect('clicked', () => {
+            const s = this._backend.state;
+            if (s)
+                this._backend.setToggle(toggle.command, toggle.field, s[toggle.field] !== true);
+        });
+        return button;
+    }
+
+    _rebuildTimerMenu() {
+        const b = this._backend;
+        const s = b.state;
+        const kind = b.isOn ? 'stop' : 'start';
+        const active = b.activeTimers.map(k => `${k}:${s[`timer_${k}`]}`).join();
+        const key = `${kind}|${active}|${s.timers.join()}`;
+        if (key === this._timerMenuKey)
+            return;
+        this._timerMenuKey = key;
+        this._timerMenu.menu.removeAll();
+
+        for (const k of b.activeTimers) {
+            const minutes = s[`timer_${k}`];
+            const item = new PopupMenu.PopupMenuItem(`${TIMER_VERBS[k]}${minutes > 0 ? ` ${duration(minutes)}` : ''}  ·  Cancel`);
+            item.connect('activate', () => b.setTimer(k, 0));
+            this._timerMenu.menu.addMenuItem(item);
+        }
+        if (b.activeTimers.length)
+            this._timerMenu.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        if (s.timers.includes(kind)) {
+            for (const minutes of DURATIONS) {
+                const item = new PopupMenu.PopupMenuItem(`${kind === 'stop' ? 'Turn off' : 'Turn on'} in ${duration(minutes)}`);
+                item.connect('activate', () => b.setTimer(kind, minutes));
+                this._timerMenu.menu.addMenuItem(item);
+            }
+        }
     }
 
     _paintDial(area) {
@@ -274,6 +380,54 @@ class LgAcIndicator extends PanelMenu.Button {
             if (!this._fanTimer) {
                 this._fanSlider.value = speeds.length > 1 ? index / (speeds.length - 1) : 0;
                 this._fanLabel.text = b.label(s.fan_speed);
+            }
+        }
+
+        this._fault.visible = Boolean(s?.error);
+        if (s) {
+            // Presets
+            if ([...this._presetButtons.keys()].join() !== s.presets.map(p => p.id).join()) {
+                this._presetRow.destroy_all_children();
+                this._presetButtons.clear();
+                for (const preset of s.presets) {
+                    const button = this._presetButton(preset);
+                    this._presetButtons.set(preset.id, button);
+                    this._presetRow.add_child(button);
+                }
+            }
+            for (const preset of s.presets) {
+                const button = this._presetButtons.get(preset.id);
+                const active = b.presetActive(preset);
+                button.style = active ? `background-color: ${button._tint}; color: white;` : '';
+                button._icon.style = active ? 'color: white;' : `color: ${button._tint};`;
+            }
+
+            // Toggles
+            for (const toggle of TOGGLES) {
+                const button = this._toggleButtons.get(toggle.field);
+                const on = s[toggle.field] === true;
+                button.visible = Boolean(s[toggle.can]);
+                button.reactive = b.isOn;
+                button.opacity = b.isOn ? 255 : 115;
+                button._circle.style = on ? `background-color: ${toggle.tint}; color: white;` : '';
+            }
+
+            // Timer
+            this._timerMenu.visible = s.timers.length > 0;
+            this._timerMenu.label.text = b.activeTimers.length
+                ? `${TIMER_VERBS[b.activeTimers[0]]} ${duration(s[`timer_${b.activeTimers[0]}`] || 0)}`
+                : 'Timer';
+            this._timerMenu.icon.style = b.activeTimers.length ? 'color: #8b5cf6;' : '';
+            this._rebuildTimerMenu();
+
+            // Filter
+            const used = s.filter_used_hours;
+            this._filter.visible = used !== null && used !== undefined;
+            if (this._filter.visible) {
+                let text = `Filter used ${used} h`;
+                if (s.filter_lifetime_hours)
+                    text += ` · ${Math.max(0, Math.round(100 - 100 * used / s.filter_lifetime_hours))}% left`;
+                this._filter.label.text = text;
             }
         }
 

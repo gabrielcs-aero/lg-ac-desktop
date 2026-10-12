@@ -8,9 +8,9 @@ import QtQuick.Shapes
 ApplicationWindow {
     id: win
     width: 400
-    height: 600
+    height: 780
     minimumWidth: 360
-    minimumHeight: 580
+    minimumHeight: 560
     visible: true
     title: acModel.alias + (acModel.isDemo ? " (demo)" : "")
     color: t.bg
@@ -41,160 +41,298 @@ ApplicationWindow {
     function iconUrl(name) { return iconDir + name + ".svg" }
     function label(v) { return ready && ac.labels[v] ? ac.labels[v] : v }
     function fmt(v) { return v === null || v === undefined ? "–" : String(Math.round(v * 2) / 2) }
+    function duration(minutes) {
+        const h = Math.floor(minutes / 60), m = minutes % 60
+        return h && m ? h + " h " + m + " min" : h ? h + " h" : m + " min"
+    }
+    readonly property var timerVerbs: ({ stop: "Off in", start: "On in", sleep: "Sleep, off in" })
+    readonly property var activeTimers: {
+        if (!ready) return []
+        return ["stop", "sleep", "start"].filter(k => ac["timer_" + k] !== null && ac["timer_" + k] !== undefined)
+    }
+    function timerText(kind) {
+        const m = ac["timer_" + kind]
+        return timerVerbs[kind] + (m > 0 ? " " + duration(m) : "")
+    }
 
 
     // ---------- main view ----------
-    ColumnLayout {
+    Item {
         anchors.fill: parent
-        anchors.margins: 20
-        spacing: 18
         visible: !acModel.needsSetup
 
-        // Header
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: 12
+        Flickable {
+            id: scroller
+            anchors { left: parent.left; right: parent.right; top: parent.top; bottom: footer.top; bottomMargin: 8 }
+            contentHeight: mainColumn.implicitHeight + 40
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
             ColumnLayout {
-                Layout.fillWidth: true
-                spacing: 2
+                id: mainColumn
+                x: 20
+                y: 20
+                width: scroller.width - 40
+                spacing: 14
+
+                // Header
                 RowLayout {
-                    spacing: 8
-                    Label {
-                        text: acModel.alias
-                        color: t.text
-                        font.pixelSize: 20
-                        font.weight: Font.DemiBold
-                        elide: Text.ElideRight
-                        Layout.maximumWidth: 220
-                    }
-                    Rectangle {
-                        visible: acModel.isDemo
-                        radius: 6
-                        color: t.raised
-                        implicitWidth: demoLabel.implicitWidth + 12
-                        implicitHeight: demoLabel.implicitHeight + 4
-                        Label { id: demoLabel; anchors.centerIn: parent; text: "Demo"; color: t.muted; font.pixelSize: 11 }
-                    }
-                }
-                Label {
-                    text: ready ? "Room " + win.fmt(ac.current_temp) + "°" + ac.unit : " "
-                    color: t.muted
-                    font.pixelSize: 13
-                }
-            }
-            IconButton { source: win.iconUrl("settings"); onClicked: acModel.openSetup(); Accessible.name: "Settings" }
-            PowerSwitch {}
-        }
-
-        // Dial
-        Item {
-            Layout.fillWidth: true
-            Layout.preferredHeight: 250
-
-            Item {
-                id: dial
-                width: 230
-                height: 230
-                anchors.centerIn: parent
-                readonly property real lineWidth: 14
-                readonly property real fraction: {
-                    if (!ready || ac.shown_target === null || ac.temp_min === null) return 0
-                    return Math.max(0, Math.min(1, (ac.shown_target - ac.temp_min) / (ac.temp_max - ac.temp_min)))
-                }
-                property real shownFraction: fraction
-                Behavior on shownFraction { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } }
-
-                Shape {
-                    anchors.fill: parent
-                    layer.enabled: true
-                    layer.samples: 4
-                    ShapePath {
-                        strokeColor: t.track
-                        strokeWidth: dial.lineWidth
-                        fillColor: "transparent"
-                        capStyle: ShapePath.RoundCap
-                        PathAngleArc {
-                            centerX: dial.width / 2; centerY: dial.height / 2
-                            radiusX: dial.width / 2 - dial.lineWidth; radiusY: radiusX
-                            startAngle: 135; sweepAngle: 270
-                        }
-                    }
-                    ShapePath {
-                        strokeColor: win.accent
-                        strokeWidth: dial.lineWidth
-                        fillColor: "transparent"
-                        capStyle: ShapePath.RoundCap
-                        PathAngleArc {
-                            centerX: dial.width / 2; centerY: dial.height / 2
-                            radiusX: dial.width / 2 - dial.lineWidth; radiusY: radiusX
-                            startAngle: 135; sweepAngle: Math.max(0.5, 270 * dial.shownFraction)
-                        }
-                    }
-                }
-
-                ColumnLayout {
-                    anchors.centerIn: parent
-                    spacing: 0
-                    Label {
-                        Layout.alignment: Qt.AlignHCenter
-                        text: ready ? win.fmt(ac.shown_target) + "°" : "–"
-                        color: isOn ? t.text : t.muted
-                        font.pixelSize: 64
-                        font.weight: Font.Light
-                    }
-                    Label {
-                        Layout.alignment: Qt.AlignHCenter
-                        text: !ready ? "" : !isOn ? "Off" : ac.can_set_temp ? "Target · °" + ac.unit : "No target in " + win.label(ac.mode)
-                        color: t.muted
-                        font.pixelSize: 13
-                    }
-                }
-            }
-
-            StepButton { text: "−"; direction: -1; anchors.verticalCenter: dial.verticalCenter; anchors.right: dial.left; anchors.rightMargin: -4 }
-            StepButton { text: "+"; direction: 1; anchors.verticalCenter: dial.verticalCenter; anchors.left: dial.right; anchors.leftMargin: -4 }
-        }
-
-        // Modes
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: 8
-            Repeater {
-                model: ready ? ac.modes : []
-                delegate: ModeChip {
-                    required property string modelData
-                    mode: modelData
                     Layout.fillWidth: true
+                    spacing: 12
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 2
+                        RowLayout {
+                            spacing: 8
+                            Label {
+                                text: acModel.alias
+                                color: t.text
+                                font.pixelSize: 20
+                                font.weight: Font.DemiBold
+                                elide: Text.ElideRight
+                                Layout.maximumWidth: 220
+                            }
+                            Rectangle {
+                                visible: acModel.isDemo
+                                radius: 6
+                                color: t.raised
+                                implicitWidth: demoLabel.implicitWidth + 12
+                                implicitHeight: demoLabel.implicitHeight + 4
+                                Label { id: demoLabel; anchors.centerIn: parent; text: "Demo"; color: t.muted; font.pixelSize: 11 }
+                            }
+                        }
+                        Label {
+                            text: ready ? "Room " + win.fmt(ac.current_temp) + "°" + ac.unit : " "
+                            color: t.muted
+                            font.pixelSize: 13
+                        }
+                    }
+                    IconButton { source: win.iconUrl("settings"); onClicked: acModel.openSetup(); Accessible.name: "Settings" }
+                    PowerSwitch {}
                 }
-            }
-        }
 
-        // Fan speed
-        Rectangle {
-            Layout.fillWidth: true
-            implicitHeight: fanColumn.implicitHeight + 28
-            radius: 16
-            color: t.card
-            opacity: isOn ? 1 : 0.6
-            ColumnLayout {
-                id: fanColumn
-                anchors.fill: parent
-                anchors.margins: 14
-                spacing: 10
+                // Fault reported by the unit
+                Rectangle {
+                    Layout.fillWidth: true
+                    visible: ready && ac.error === true
+                    radius: 12
+                    color: Qt.rgba(t.danger.r, t.danger.g, t.danger.b, 0.12)
+                    implicitHeight: faultRow.implicitHeight + 20
+                    RowLayout {
+                        id: faultRow
+                        anchors.fill: parent
+                        anchors.margins: 10
+                        spacing: 10
+                        IconImage { source: win.iconUrl("warning"); color: t.danger; sourceSize: Qt.size(18, 18) }
+                        Label {
+                            Layout.fillWidth: true
+                            text: "The unit reports a fault. Check it, or look in the ThinQ app for details."
+                            color: t.danger
+                            font.pixelSize: 13
+                            wrapMode: Text.Wrap
+                        }
+                    }
+                }
+
+                // Dial
+                Item {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 250
+
+                    Item {
+                        id: dial
+                        width: 230
+                        height: 230
+                        anchors.centerIn: parent
+                        readonly property real lineWidth: 14
+                        readonly property real fraction: {
+                            if (!ready || ac.shown_target === null || ac.temp_min === null) return 0
+                            return Math.max(0, Math.min(1, (ac.shown_target - ac.temp_min) / (ac.temp_max - ac.temp_min)))
+                        }
+                        property real shownFraction: fraction
+                        Behavior on shownFraction { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } }
+
+                        Shape {
+                            anchors.fill: parent
+                            layer.enabled: true
+                            layer.samples: 4
+                            ShapePath {
+                                strokeColor: t.track
+                                strokeWidth: dial.lineWidth
+                                fillColor: "transparent"
+                                capStyle: ShapePath.RoundCap
+                                PathAngleArc {
+                                    centerX: dial.width / 2; centerY: dial.height / 2
+                                    radiusX: dial.width / 2 - dial.lineWidth; radiusY: radiusX
+                                    startAngle: 135; sweepAngle: 270
+                                }
+                            }
+                            ShapePath {
+                                strokeColor: win.accent
+                                strokeWidth: dial.lineWidth
+                                fillColor: "transparent"
+                                capStyle: ShapePath.RoundCap
+                                PathAngleArc {
+                                    centerX: dial.width / 2; centerY: dial.height / 2
+                                    radiusX: dial.width / 2 - dial.lineWidth; radiusY: radiusX
+                                    startAngle: 135; sweepAngle: Math.max(0.5, 270 * dial.shownFraction)
+                                }
+                            }
+                        }
+
+                        ColumnLayout {
+                            anchors.centerIn: parent
+                            spacing: 0
+                            Label {
+                                Layout.alignment: Qt.AlignHCenter
+                                text: ready ? win.fmt(ac.shown_target) + "°" : "–"
+                                color: isOn ? t.text : t.muted
+                                font.pixelSize: 64
+                                font.weight: Font.Light
+                            }
+                            Label {
+                                Layout.alignment: Qt.AlignHCenter
+                                text: !ready ? "" : !isOn ? "Off" : ac.can_set_temp ? "Target · °" + ac.unit : "No target in " + win.label(ac.mode)
+                                color: t.muted
+                                font.pixelSize: 13
+                            }
+                        }
+                    }
+
+                    StepButton { text: "−"; direction: -1; anchors.verticalCenter: dial.verticalCenter; anchors.right: dial.left; anchors.rightMargin: -4 }
+                    StepButton { text: "+"; direction: 1; anchors.verticalCenter: dial.verticalCenter; anchors.left: dial.right; anchors.leftMargin: -4 }
+                }
+
+                // Presets
+                SectionLabel { text: "Presets"; visible: ready }
                 RowLayout {
-                    IconImage { source: win.iconUrl("mode-fan"); color: t.muted; sourceSize: Qt.size(18, 18) }
-                    Label { text: "Fan speed"; color: t.muted; font.pixelSize: 13; Layout.fillWidth: true }
-                    Label { text: ready ? win.label(fanSlider.speed) : ""; color: t.text; font.pixelSize: 14; font.weight: Font.DemiBold }
+                    Layout.fillWidth: true
+                    spacing: 8
+                    visible: ready
+                    Repeater {
+                        model: ready ? ac.presets : []
+                        delegate: PresetPill {
+                            required property var modelData
+                            preset: modelData
+                            Layout.fillWidth: true
+                            Layout.preferredWidth: 1
+                        }
+                    }
                 }
-                FanSlider { id: fanSlider; Layout.fillWidth: true }
+
+                SectionLabel { text: "Mode" }
+                // Modes
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    Repeater {
+                        model: ready ? ac.modes : []
+                        delegate: ModeChip {
+                            required property string modelData
+                            mode: modelData
+                            Layout.fillWidth: true
+                        }
+                    }
+                }
+
+                // Fan speed
+                Rectangle {
+                    Layout.fillWidth: true
+                    implicitHeight: fanColumn.implicitHeight + 28
+                    radius: 16
+                    color: t.card
+                    opacity: isOn ? 1 : 0.6
+                    ColumnLayout {
+                        id: fanColumn
+                        anchors.fill: parent
+                        anchors.margins: 14
+                        spacing: 10
+                        RowLayout {
+                            IconImage { source: win.iconUrl("mode-fan"); color: t.muted; sourceSize: Qt.size(18, 18) }
+                            Label { text: "Fan speed"; color: t.muted; font.pixelSize: 13; Layout.fillWidth: true }
+                            Label { text: ready ? win.label(fanSlider.speed) : ""; color: t.text; font.pixelSize: 14; font.weight: Font.DemiBold }
+                        }
+                        FanSlider { id: fanSlider; Layout.fillWidth: true }
+                    }
+                }
+
+                // Extras
+                SectionLabel { text: "More"; visible: ready }
+                GridLayout {
+                    Layout.fillWidth: true
+                    visible: ready
+                    columns: 2
+                    columnSpacing: 10
+                    rowSpacing: 10
+                    ToggleTile {
+                        title: "Swing"
+                        iconName: "swing"
+                        tint: "#0ea5e9"
+                        visible: ready && ac.can_swing
+                        on: ready && ac.swing === true
+                        subtitle: on ? "Up and down" : "Off"
+                        enabled: isOn
+                        onClicked: acModel.setSwing(!on)
+                    }
+                    ToggleTile {
+                        title: "Power save"
+                        iconName: "power-save"
+                        tint: "#10b981"
+                        visible: ready && ac.can_power_save
+                        on: ready && ac.power_save === true
+                        subtitle: on ? "On" : "Off"
+                        enabled: isOn
+                        onClicked: acModel.setPowerSave(!on)
+                    }
+                    ToggleTile {
+                        title: "Display"
+                        iconName: "display"
+                        tint: "#f59e0b"
+                        visible: ready && ac.can_display_light
+                        on: ready && ac.display_light === true
+                        subtitle: on ? "Light on" : "Light off"
+                        enabled: isOn
+                        onClicked: acModel.setDisplayLight(!on)
+                    }
+                    ToggleTile {
+                        title: "Timer"
+                        iconName: "timer"
+                        tint: "#8b5cf6"
+                        visible: ready && ac.timers.length > 0
+                        on: win.activeTimers.length > 0
+                        subtitle: on ? win.timerText(win.activeTimers[0]) : "Not set"
+                        onClicked: timerPopup.open()
+                    }
+                }
+
+                // Filter
+                RowLayout {
+                    Layout.fillWidth: true
+                    visible: ready && ac.filter_used_hours !== null && ac.filter_used_hours !== undefined
+                    spacing: 8
+                    opacity: 0.85
+                    IconImage { source: win.iconUrl("filter"); color: t.muted; sourceSize: Qt.size(16, 16) }
+                    Label {
+                        Layout.fillWidth: true
+                        color: t.muted
+                        font.pixelSize: 12
+                        text: {
+                            if (!ready) return ""
+                            let s = "Filter used " + ac.filter_used_hours + " h"
+                            if (ac.filter_lifetime_hours)
+                                s += " · " + Math.max(0, Math.round(100 - 100 * ac.filter_used_hours / ac.filter_lifetime_hours)) + "% left"
+                            return s
+                        }
+                    }
+                }
             }
         }
-
-        Item { Layout.fillHeight: true }
 
         // Status
         RowLayout {
-            Layout.fillWidth: true
+            id: footer
+            anchors { left: parent.left; right: parent.right; bottom: parent.bottom; margins: 20; topMargin: 0 }
             Label {
                 Layout.fillWidth: true
                 text: acModel.message
@@ -262,7 +400,271 @@ ApplicationWindow {
         Item { Layout.fillHeight: true }
     }
 
+    // ---------- timer sheet ----------
+    Popup {
+        id: timerPopup
+        objectName: "timerPopup"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(win.width - 32, 360)
+        modal: true
+        focus: true
+        padding: 20
+        property string kind: "stop"
+        property int minutes: 60
+        readonly property var kinds: ready ? ["stop", "start", "sleep"].filter(k => ac.timers.indexOf(k) >= 0) : []
+        readonly property var kindLabels: ({ stop: "Turn off", start: "Turn on", sleep: "Sleep" })
+        onAboutToShow: {
+            kind = isOn ? (kinds.indexOf("stop") >= 0 ? "stop" : kinds[0]) : (kinds.indexOf("start") >= 0 ? "start" : kinds[0])
+            minutes = 60
+        }
+        Overlay.modal: Rectangle { color: Qt.rgba(0, 0, 0, 0.45) }
+        background: Rectangle { radius: 22; color: t.card; border.color: t.track; border.width: 1 }
+        enter: Transition {
+            NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 160 }
+            NumberAnimation { property: "scale"; from: 0.94; to: 1; duration: 160; easing.type: Easing.OutCubic }
+        }
+        exit: Transition { NumberAnimation { property: "opacity"; to: 0; duration: 120 } }
+
+        contentItem: ColumnLayout {
+            spacing: 16
+
+            RowLayout {
+                Layout.fillWidth: true
+                IconImage { source: win.iconUrl("timer"); color: "#8b5cf6"; sourceSize: Qt.size(22, 22) }
+                Label { text: "Timer"; color: t.text; font.pixelSize: 18; font.weight: Font.DemiBold; Layout.fillWidth: true }
+                MiniStep { text: "×"; onClicked: timerPopup.close(); Accessible.name: "Close" }
+            }
+
+            // Turn off / Turn on / Sleep
+            Rectangle {
+                Layout.fillWidth: true
+                implicitHeight: 40
+                radius: 20
+                color: t.raised
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.margins: 4
+                    spacing: 4
+                    Repeater {
+                        model: timerPopup.kinds
+                        delegate: AbstractButton {
+                            id: seg
+                            required property string modelData
+                            readonly property bool selected: timerPopup.kind === modelData
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            onClicked: timerPopup.kind = modelData
+                            Accessible.role: Accessible.PageTab
+                            Accessible.name: timerPopup.kindLabels[modelData]
+                            background: Rectangle {
+                                radius: 16
+                                color: seg.selected ? t.card : "transparent"
+                                border.color: seg.selected ? t.track : "transparent"
+                                Behavior on color { ColorAnimation { duration: 150 } }
+                            }
+                            contentItem: Label {
+                                text: timerPopup.kindLabels[seg.modelData]
+                                color: seg.selected ? t.text : t.muted
+                                font.pixelSize: 13
+                                font.weight: seg.selected ? Font.DemiBold : Font.Normal
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Quick durations
+            GridLayout {
+                Layout.fillWidth: true
+                columns: 3
+                rowSpacing: 8
+                columnSpacing: 8
+                Repeater {
+                    model: [30, 60, 120, 240, 360, 480]
+                    delegate: AbstractButton {
+                        id: chip
+                        required property int modelData
+                        readonly property bool selected: timerPopup.minutes === modelData
+                        Layout.fillWidth: true
+                        Layout.preferredWidth: 1  // equal columns regardless of label length
+                        implicitHeight: 38
+                        hoverEnabled: true
+                        onClicked: timerPopup.minutes = modelData
+                        background: Rectangle {
+                            radius: 12
+                            color: chip.selected ? "#8b5cf6" : chip.hovered ? t.raised : t.bg
+                            Behavior on color { ColorAnimation { duration: 150 } }
+                        }
+                        contentItem: Label {
+                            text: win.duration(chip.modelData)
+                            color: chip.selected ? "white" : t.text
+                            font.pixelSize: 13
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                    }
+                }
+            }
+
+            // Fine-tune
+            RowLayout {
+                Layout.fillWidth: true
+                MiniStep { text: "−"; enabled: timerPopup.minutes > 10; autoRepeat: true; onClicked: timerPopup.minutes = Math.max(10, timerPopup.minutes - 10); Accessible.name: "Shorter" }
+                Label {
+                    Layout.fillWidth: true
+                    horizontalAlignment: Text.AlignHCenter
+                    text: win.duration(timerPopup.minutes)
+                    color: t.text
+                    font.pixelSize: 26
+                    font.weight: Font.Light
+                }
+                MiniStep { text: "+"; enabled: timerPopup.minutes < 1440; autoRepeat: true; onClicked: timerPopup.minutes = Math.min(1440, timerPopup.minutes + 10); Accessible.name: "Longer" }
+            }
+
+            PillButton {
+                Layout.fillWidth: true
+                primary: true
+                text: "Start " + timerPopup.kindLabels[timerPopup.kind].toLowerCase() + " timer"
+                onClicked: { acModel.setTimer(timerPopup.kind, timerPopup.minutes); timerPopup.close() }
+            }
+
+            // Running timers
+            Repeater {
+                model: win.activeTimers
+                delegate: RowLayout {
+                    required property string modelData
+                    Layout.fillWidth: true
+                    spacing: 10
+                    Rectangle { width: 8; height: 8; radius: 4; color: "#8b5cf6" }
+                    Label { text: win.timerText(modelData); color: t.text; font.pixelSize: 13; Layout.fillWidth: true }
+                    AbstractButton {
+                        id: cancelBtn
+                        implicitWidth: cancelLabel.implicitWidth + 20
+                        implicitHeight: 28
+                        hoverEnabled: true
+                        onClicked: acModel.setTimer(modelData, 0)
+                        background: Rectangle { radius: 14; color: cancelBtn.hovered ? t.raised : "transparent"; border.color: t.track }
+                        contentItem: Label { id: cancelLabel; text: "Cancel"; color: t.danger; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    }
+                }
+            }
+        }
+    }
+
     // ---------- components ----------
+
+    component SectionLabel: Label {
+        color: t.muted
+        font.pixelSize: 12
+        font.weight: Font.DemiBold
+        font.letterSpacing: 0.4
+        Layout.topMargin: 4
+    }
+
+    component PresetPill: AbstractButton {
+        id: pill
+        property var preset
+        readonly property var tints: ({ sleep: "#8b5cf6", max_cool: "#3b82f6", eco: "#10b981" })
+        readonly property color tint: tints[preset.id] || "#3b82f6"
+        // A preset counts as active when nothing but its timer would change.
+        readonly property bool active: Object.keys(preset.changes).filter(k => k.indexOf("timer_") !== 0 && k !== "can_set_temp").length === 0
+        implicitHeight: 42
+        hoverEnabled: true
+        onClicked: acModel.applyPreset(preset.id)
+        Accessible.name: preset.name
+        Accessible.description: preset.description
+        ToolTip.visible: hovered
+        ToolTip.delay: 500
+        ToolTip.text: preset.description
+        background: Rectangle {
+            radius: 21
+            color: pill.active ? pill.tint : pill.hovered ? t.raised : t.card
+            border.color: pill.active ? pill.tint : t.track
+            border.width: 1
+            Behavior on color { ColorAnimation { duration: 200 } }
+        }
+        contentItem: RowLayout {
+            spacing: 6
+            Item { Layout.fillWidth: true }
+            IconImage {
+                source: win.iconUrl(pill.preset.icon)
+                sourceSize: Qt.size(16, 16)
+                color: pill.active ? "white" : pill.tint
+                Behavior on color { ColorAnimation { duration: 200 } }
+            }
+            Label {
+                text: pill.preset.name
+                color: pill.active ? "white" : t.text
+                font.pixelSize: 13
+                font.weight: Font.DemiBold
+                Behavior on color { ColorAnimation { duration: 200 } }
+            }
+            Item { Layout.fillWidth: true }
+        }
+    }
+
+    component ToggleTile: AbstractButton {
+        id: tile
+        property string title
+        property string subtitle
+        property string iconName
+        property color tint: "#3b82f6"
+        property bool on: false
+        Layout.fillWidth: true
+        Layout.preferredWidth: 1
+        implicitHeight: 72
+        hoverEnabled: true
+        Accessible.name: title
+        Accessible.description: subtitle
+        background: Rectangle {
+            radius: 16
+            color: tile.hovered && tile.enabled ? t.raised : t.card
+            border.color: tile.on ? Qt.rgba(tile.tint.r, tile.tint.g, tile.tint.b, 0.55) : "transparent"
+            border.width: 1.5
+            Behavior on border.color { ColorAnimation { duration: 200 } }
+        }
+        contentItem: RowLayout {
+            spacing: 12
+            opacity: tile.enabled ? 1 : 0.45
+            Rectangle {
+                width: 38; height: 38; radius: 19
+                color: tile.on ? tile.tint : t.raised
+                Behavior on color { ColorAnimation { duration: 200 } }
+                IconImage {
+                    anchors.centerIn: parent
+                    source: win.iconUrl(tile.iconName)
+                    sourceSize: Qt.size(20, 20)
+                    color: tile.on ? "white" : t.muted
+                    Behavior on color { ColorAnimation { duration: 200 } }
+                }
+            }
+            ColumnLayout {
+                spacing: 1
+                Layout.fillWidth: true
+                Label { text: tile.title; color: t.text; font.pixelSize: 14; font.weight: Font.DemiBold }
+                Label { text: tile.subtitle; color: t.muted; font.pixelSize: 12; elide: Text.ElideRight; Layout.fillWidth: true }
+            }
+        }
+    }
+
+    component MiniStep: AbstractButton {
+        id: ms
+        implicitWidth: 40
+        implicitHeight: 40
+        hoverEnabled: true
+        background: Rectangle { radius: 20; color: ms.pressed ? t.track : ms.hovered ? t.raised : t.bg }
+        contentItem: Label {
+            text: ms.text
+            color: t.text
+            opacity: ms.enabled ? 1 : 0.3
+            font.pixelSize: 20
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+        }
+    }
 
     component IconButton: AbstractButton {
         id: ib

@@ -50,6 +50,18 @@ export class AcBackend {
     get canSetTemp() { return this.isOn && this.state.can_set_temp && this.shownTarget !== null; }
     label(value) { return this.state?.labels?.[value] ?? value; }
 
+    /** Timer kinds with a countdown running, most relevant first. */
+    get activeTimers() {
+        if (!this.ready)
+            return [];
+        return ['stop', 'sleep', 'start'].filter(k => this.state[`timer_${k}`] !== null && this.state[`timer_${k}`] !== undefined);
+    }
+
+    /** A preset counts as active when nothing but its timer would change. */
+    presetActive(preset) {
+        return Object.keys(preset.changes).every(k => k.startsWith('timer_') || k === 'can_set_temp');
+    }
+
     // ---------- commands ----------
 
     refresh() {
@@ -85,6 +97,25 @@ export class AcBackend {
     setFan(speed) {
         if (this.ready && speed !== this.state.fan_speed)
             this._send('fan', ['fan', speed], {fan_speed: speed});
+    }
+
+    /** command: "swing" | "power-save" | "display"; field: the matching state field. */
+    setToggle(command, field, on) {
+        if (this.ready && this.state[field] !== on)
+            this._send(command, [command, on ? 'on' : 'off'], {[field]: on});
+    }
+
+    /** kind: "start" | "stop" | "sleep"; 0 minutes cancels. */
+    setTimer(kind, minutes) {
+        this._send(`timer-${kind}`, ['timer', kind, String(minutes)], {[`timer_${kind}`]: minutes || null});
+    }
+
+    applyPreset(preset) {
+        if (!this.ready || Object.keys(preset.changes).length === 0)
+            return;
+        this.pendingTarget = null;
+        this._clearTimer('temp');
+        this._send('preset', ['preset', preset.id], preset.changes);
     }
 
     nudge(direction) {

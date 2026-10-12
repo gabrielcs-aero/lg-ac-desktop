@@ -4,19 +4,21 @@
 
 [![Tests](https://github.com/gabrielcs-aero/lg-ac-desktop/actions/workflows/tests.yml/badge.svg)](https://github.com/gabrielcs-aero/lg-ac-desktop/actions/workflows/tests.yml)
 
-Control an LG ThinQ air conditioner from your Linux desktop: power, mode, target temperature and fan speed. It comes in three forms:
+Control an LG ThinQ air conditioner from your Linux desktop: power, mode, temperature and fan speed, plus swing, power save, the display light, on/off and sleep timers, filter hours and one-click presets. It comes in three forms:
 
 - **Desktop app**: a window you open from your app launcher.
 - **KDE Plasma widget**: sits in your panel, shows the current temperature, and opens the controls with a click.
 - **GNOME Shell extension**: the same idea for the GNOME top bar.
 
-| App (dark) | App (light) | KDE Plasma widget |
-| --- | --- | --- |
-| ![App in dark mode](docs/app-dark.png) | ![App in light mode](docs/app-light.png) | ![KDE Plasma widget](docs/kde-widget.png) |
+| App | More controls | Timer | KDE Plasma widget |
+| --- | --- | --- | --- |
+| ![App in dark mode](docs/app-dark.png) | ![Presets, swing, power save, display and timer tiles in light mode](docs/app-light.png) | ![Timer sheet](docs/app-timer.png) | ![KDE Plasma widget](docs/kde-widget.png) |
 
 It talks to LG's official [ThinQ Connect API](https://smartsolution.developer.lge.com/en/apiManage/thinq_connect) through LG's [`thinqconnect`](https://github.com/thinq-connect/pythinqconnect) Python SDK. It uses a Personal Access Token that you create and can revoke at any time.
 
 Built and tested against a wall-mounted unit (model S3NQ09AM31A), but it reads each unit's own capability profile. Modes, fan speeds and temperature limits therefore match whatever your model supports.
+
+**Presets:** *Sleep* (25°, quiet fan, display off, off after 8 h), *Max cool* (coldest setting, full fan, swing) and *Eco* (26°, low fan, power save). A preset only changes what your unit supports, and it lights up when the unit already matches it.
 
 Changes show up instantly and are sent in the background, one at a time and in order. A few seconds after your last change the unit is read back to confirm, and anything LG rejected is undone.
 
@@ -72,6 +74,11 @@ The widgets use `lg-ac-cli`, which you can also call yourself. Each command prin
 .venv/bin/lg-ac-cli mode COOL
 .venv/bin/lg-ac-cli temp 23.5 --mode COOL
 .venv/bin/lg-ac-cli fan HIGH
+.venv/bin/lg-ac-cli swing on
+.venv/bin/lg-ac-cli power-save off
+.venv/bin/lg-ac-cli display off
+.venv/bin/lg-ac-cli timer stop 90     # turn off in 90 minutes (start / stop / sleep; 0 cancels)
+.venv/bin/lg-ac-cli preset sleep      # sleep / max_cool / eco
 ```
 
 It caches your unit's profile in `~/.cache/lg-ac-desktop/` so each call needs only one request to LG.
@@ -82,6 +89,7 @@ It caches your unit's profile in `~/.cache/lg-ac-desktop/` so each call needs on
 | --- | --- |
 | `lg_ac/controller.py` | Lists your air conditioners, reads status and sends commands, validating each against the unit's profile. |
 | `lg_ac/app.py`, `lg_ac/qml/Main.qml` | The desktop app: a Qt Quick (QML) window driven by a Python model. Follows your system's light/dark setting (force one with `LG_AC_THEME=dark` or `light`). |
+| `lg_ac/presets.py` | The presets, planned against what each unit supports. |
 | `lg_ac/cli.py` | `lg-ac-cli`, the JSON backend for the panel widgets. |
 | `widgets/kde/` | The Plasma widget (QML). |
 | `widgets/gnome/` | The GNOME Shell extension (GJS); `backend.js` holds its logic and `extension.js` its UI. |
