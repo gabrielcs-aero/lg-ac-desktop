@@ -132,22 +132,14 @@ def finish_changes(boost: Boost, state: AcState) -> dict:
 
 
 async def apply_finish(controller: AcController, boost: Boost, changes: dict, strict: bool = True) -> None:
-    """Send `changes` from finish_changes. With strict=False, failures are only logged (the unit
-    may be off, which rejects some of them)."""
-    steps = []
-    if "target_temp" in changes:
-        steps.append(lambda: controller.set_target_temperature(changes["target_temp"], mode=boost.mode))
-    if "fan_speed" in changes:
-        steps.append(lambda: controller.set_fan_speed(changes["fan_speed"]))
-    if "power_save" in changes:
-        steps.append(lambda: controller.set_power_save(changes["power_save"]))
-    for step in steps:
-        try:
-            await step()
-        except Exception as error:
-            if strict:
-                raise
-            _LOGGER.warning("Couldn't finish quick cool: %s", error)
+    """Send `changes` from finish_changes (as one command, so the unit beeps once). With
+    strict=False a failure is only logged (the unit may be off, which rejects some of them)."""
+    try:
+        await controller.apply(changes, mode=boost.mode)
+    except Exception as error:
+        if strict:
+            raise
+        _LOGGER.warning("Couldn't finish quick cool: %s", error)
 
 
 def describe(boost: Boost | None, state: AcState) -> dict:
@@ -245,16 +237,18 @@ class BoostService:
             self.store.write(boost)
         return boost
 
-    async def stop(self) -> None:
-        """Stop boosting now and hold the target."""
+    async def stop(self, also: dict | None = None) -> None:
+        """Stop boosting now and hold the target. `also` holds more changes to send in the same
+        command, e.g. {"power": False}."""
         boost = self.store.read()
-        if boost is None:
-            return
-        self.store.clear()
-        if runner_alive(boost):
-            os.kill(boost.pid, signal.SIGTERM)
-        state = await self.controller.refresh()
-        await apply_finish(self.controller, boost, finish_changes(boost, state))
+        if boost is not None:
+            self.store.clear()
+            if runner_alive(boost):
+                os.kill(boost.pid, signal.SIGTERM)
+        changes = dict(also or {})
+        if boost is not None:
+            changes = {**finish_changes(boost, await self.controller.refresh()), **changes}
+        await self.controller.apply(changes, mode=boost.mode if boost else None)
 
 
 async def run(

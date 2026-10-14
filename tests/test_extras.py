@@ -103,12 +103,25 @@ class PresetTest(unittest.IsolatedAsyncioTestCase):
         await self.controller.refresh()
         changes = plan(get_preset("sleep"), replace(state, mode="FAN"))
         await self.controller.apply(changes)
-        self.assertEqual(self.api.commands[0], {"operation": {"airConOperationMode": "POWER_ON"}})
-        self.assertEqual(self.api.commands[1], {"airConJobMode": {"currentJobMode": "COOL"}})
-        self.assertEqual(self.api.commands[2], {"temperatureInUnits": {"coolTargetTemperature": 25, "unit": "C"}})
+        # One command, so the unit beeps once.
+        self.assertEqual(self.api.commands, [{
+            "operation": {"airConOperationMode": "POWER_ON"},
+            "airConJobMode": {"currentJobMode": "COOL"},
+            "temperatureInUnits": {"coolTargetTemperature": 25, "unit": "C"},
+            "airFlow": {"windStrength": "LOW"},
+            "display": {"light": "OFF"},
+            "sleepTimer": {"relativeHourToStop": 8, "relativeMinuteToStop": 0},
+        }])
         s = await self.controller.refresh()
         self.assertEqual((s.power, s.mode, s.target_temp, s.fan_speed, s.display_light, s.timer_sleep),
                          (True, "COOL", 25, "LOW", False, 480))
+
+    async def test_apply_falls_back_to_one_command_each(self):
+        self.api.refuse_combined = True  # like a unit that takes one setting per command
+        await self.controller.apply({"fan_speed": "HIGH", "swing": True})
+        self.assertEqual(self.api.commands, [{"airFlow": {"windStrength": "HIGH"}}, {"windDirection": {"rotateUpDown": True}}])
+        s = await self.controller.refresh()
+        self.assertEqual((s.fan_speed, s.swing), ("HIGH", True))
 
     def test_presets_for_lists_all_with_changes(self):
         data = presets_for(self.state)

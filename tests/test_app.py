@@ -63,9 +63,16 @@ class AppTest(unittest.TestCase):
         wait_until(lambda: self.model.ready)
         self.model.setMode("AUTO")
         self.model.setFanSpeed("HIGH")
-        self.assertEqual((self.model.ac["mode"], self.model.ac["fan_speed"]), ("AUTO", "HIGH"))
+        self.model.nudge(1)
+        self.assertEqual((self.model.ac["mode"], self.model.ac["fan_speed"], self.model.ac["shown_target"]), ("AUTO", "HIGH", 22.5))
         self.assertEqual(self.model.message, "Sending…")
         self.assertTrue(wait_until(lambda: self.model.message == "Sent"))
+        # Changed together, so sent as one command: the unit beeps once.
+        self.assertEqual(self.model.controller._api.commands, [{
+            "airConJobMode": {"currentJobMode": "AUTO"},
+            "temperatureInUnits": {"autoTargetTemperature": 22.5, "unit": "C"},
+            "airFlow": {"windStrength": "HIGH"},
+        }])
         self.assertEqual(self.warnings, [])
 
     def test_extras_and_presets_show_immediately(self):

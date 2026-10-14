@@ -11,6 +11,7 @@ Every command prints one line of JSON: {"ok": true, ...} or {"ok": false, "error
     lg-ac-cli power-save on|off
     lg-ac-cli display on|off
     lg-ac-cli timer start|stop|sleep MINUTES     (0 cancels)
+    lg-ac-cli set mode=COOL fan=HIGH temp=23      (several at once: the unit beeps once)
     lg-ac-cli preset sleep|max_cool|eco
     lg-ac-cli boost 23|off                        (quick cool to 23°, then hold it)
     lg-ac-cli watch [--timeout SECONDS]           (waits for a change pushed by LG)
@@ -39,6 +40,44 @@ from .demo import FileDemoApi
 from .live import LiveUpdates, live_client_id
 from .presets import get_preset, plan, presets_for
 from .text import describe_error, pretty
+
+def _on_off(value: str) -> bool:
+    if value not in ("on", "off"):
+        raise ValueError(f"Use on or off, not {value!r}.")
+    return value == "on"
+
+
+def _temperature(value: str) -> float:
+    number = float(value)
+    return int(number) if number.is_integer() else number
+
+
+# `set` keys -> (AcState field, how to read the value)
+_SET_FIELDS = {
+    "power": ("power", _on_off),
+    "mode": ("mode", str),
+    "fan": ("fan_speed", str),
+    "temp": ("target_temp", _temperature),
+    "swing": ("swing", _on_off),
+    "power-save": ("power_save", _on_off),
+    "display": ("display_light", _on_off),
+    "timer-start": ("timer_start", int),
+    "timer-stop": ("timer_stop", int),
+    "timer-sleep": ("timer_sleep", int),
+}
+
+
+def parse_set(fields: list[str]) -> dict:
+    """["mode=COOL", "temp=23"] -> {"mode": "COOL", "target_temp": 23}"""
+    changes = {}
+    for item in fields:
+        key, _, value = item.partition("=")
+        if key not in _SET_FIELDS or not value:
+            raise ValueError(f"Can't set {item!r}. Use KEY=VALUE with one of: {', '.join(_SET_FIELDS)}.")
+        field, convert = _SET_FIELDS[key]
+        changes[field] = convert(value)
+    return changes
+
 
 # Errors meaning the cached device is no longer valid for this account.
 _STALE_DEVICE_CODES = {"1205", "1211", "1212", "1213", "1224"}
@@ -186,8 +225,10 @@ async def _execute(controller: AcController, device: DeviceInfo, service: BoostS
         return {"ok": True, "state": state_to_json(device, state, service.current())}
     if args.command == "power":
         if args.value == "off" and service.store.read() is not None:
-            await service.stop()  # so turning it back on doesn't resume full blast
-        await controller.set_power(args.value == "on")
+            # End the quick cool too, so turning it back on doesn't resume full blast.
+            await service.stop(also={"power": False})
+        else:
+            await controller.set_power(args.value == "on")
     elif args.command == "mode":
         await controller.set_mode(args.value)
     elif args.command == "fan":
@@ -205,6 +246,14 @@ async def _execute(controller: AcController, device: DeviceInfo, service: BoostS
         await controller.set_display_light(args.value == "on")
     elif args.command == "timer":
         await controller.set_timer(args.kind, args.minutes)
+    elif args.command == "set":
+        changes = parse_set(args.fields)
+        if "target_temp" in changes and "mode" not in changes:
+            await controller.refresh()  # need the current mode to pick the right setpoint
+        if changes.get("power") is False and service.store.read() is not None:
+            await service.stop(also=changes)  # end the quick cool in the same command
+        else:
+            await controller.apply(changes)
     elif args.command == "preset":
         preset = get_preset(args.value)
         await controller.apply(plan(preset, await controller.refresh()))
@@ -236,6 +285,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     timer = commands.add_parser("timer", help="start a countdown timer (0 minutes cancels it)")
     timer.add_argument("kind", choices=["start", "stop", "sleep"], help="start: turn on, stop: turn off, sleep: sleep timer")
     timer.add_argument("minutes", type=int)
+    commands.add_parser(
+        "set", help="change several settings in one command, so the unit beeps once: e.g. mode=COOL fan=HIGH temp=23"
+    ).add_argument("fields", nargs="+", metavar="KEY=VALUE",
+                   help="keys: " + ", ".join(_SET_FIELDS) + " (on/off for switches, minutes for timers)")
     commands.add_parser("preset", help="apply a preset").add_argument("value")
     commands.add_parser(
         "boost", help="cool (or heat) to a temperature as fast as possible, then hold it; `off` stops"

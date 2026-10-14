@@ -3,7 +3,8 @@
  *
  * All talking to LG goes through the `lg-ac-cli` command from this project, which prints
  * one line of JSON per call. Changes show up immediately and are sent one at a time in the
- * background; a few seconds after the last one the widget reads the unit back to confirm.
+ * background; changes made in quick succession go out as one `lg-ac-cli set` command, so the
+ * unit beeps once. A few seconds after the last one the widget reads the unit back to confirm.
  */
 import QtQuick
 import QtQuick.Controls as QQC2
@@ -25,6 +26,7 @@ PlasmoidItem {
     property int generation: 0          // bumped on every change so stale reads are dropped
     property int pendingCommands: 0
     property var queue: []
+    property var batch: ({})            // `lg-ac-cli set` fields waiting to go out together
     property bool commandRunning: false
     property bool statusRunning: false
     property var jobs: ({})
@@ -100,7 +102,7 @@ PlasmoidItem {
     }
 
     function run(kind, args) {
-        const safe = args.every(a => /^[A-Za-z0-9_.-]+$/.test(String(a)))
+        const safe = args.every(a => /^[A-Za-z0-9_.=-]+$/.test(String(a)))
         if (!safe) return null
         const cmd = Plasmoid.configuration.command + " " + args.join(" ")
         jobs[cmd] = { kind: kind, generation: generation }
@@ -121,7 +123,32 @@ PlasmoidItem {
         run("status", ["status"])
     }
 
+    // Simple changes wait briefly so ones made together become a single command (one beep).
+    function queueSet(fields, changes) {
+        generation++
+        errorShown = false
+        settleTimer.stop()
+        if (acState) acState = Object.assign({}, acState, changes)
+        if (Object.keys(batch).length === 0) pendingCommands++  // the batch counts as one command
+        batch = Object.assign({}, batch, fields)
+        message = i18n("Sending…")
+        batchTimer.restart()
+    }
+
+    function flushBatch() {
+        batchTimer.stop()
+        if (Object.keys(batch).length === 0) return
+        const fields = batch
+        batch = ({})
+        const waiting = queue.find(c => c.kind === "set")
+        if (waiting) { Object.assign(waiting.fields, fields); pendingCommands-- }  // join the one not yet sent
+        else queue.push({ kind: "set", fields: fields })
+        pump()
+    }
+
+    // Commands of their own (presets, quick cool).
     function send(kind, args, changes) {
+        flushBatch()
         generation++
         errorShown = false
         settleTimer.stop()
@@ -137,8 +164,9 @@ PlasmoidItem {
     function pump() {
         if (commandRunning || queue.length === 0) return
         const next = queue.shift()
+        const args = next.kind === "set" ? ["set"].concat(Object.keys(next.fields).map(k => k + "=" + next.fields[k])) : next.args
         commandRunning = true
-        if (run(next.kind, next.args) === null) finished({ kind: next.kind }, { ok: false, error: "Invalid value" })
+        if (run(next.kind, args) === null) finished({ kind: next.kind }, { ok: false, error: "Invalid value" })
     }
 
     function finished(job, result) {
@@ -178,19 +206,19 @@ PlasmoidItem {
         message = text
     }
 
-    function setPower(on) { send("power", ["power", on ? "on" : "off"], { power: on }) }
+    function setPower(on) { queueSet({ power: on ? "on" : "off" }, { power: on }) }
     function setMode(mode) {
         if (!ready || mode === acState.mode) return
         pendingTarget = NaN
         tempTimer.stop()
-        send("mode", ["mode", mode], { mode: mode, can_set_temp: acState.temp_modes.indexOf(mode) >= 0 })
+        queueSet({ mode: mode }, { mode: mode, can_set_temp: acState.temp_modes.indexOf(mode) >= 0 })
     }
-    function setFan(speed) { if (ready && speed !== acState.fan_speed) send("fan", ["fan", speed], { fan_speed: speed }) }
+    function setFan(speed) { if (ready && speed !== acState.fan_speed) queueSet({ fan: speed }, { fan_speed: speed }) }
     function setToggle(command, field, on) {
-        if (ready && acState[field] !== on) send(command, [command, on ? "on" : "off"], { [field]: on })
+        if (ready && acState[field] !== on) queueSet({ [command]: on ? "on" : "off" }, { [field]: on })
     }
     function setTimer(kind, minutes) {
-        send("timer-" + kind, ["timer", kind, minutes], { ["timer_" + kind]: minutes || null })
+        queueSet({ ["timer-" + kind]: minutes }, { ["timer_" + kind]: minutes || null })
     }
     function applyPreset(preset) {
         if (!ready || Object.keys(preset.changes).length === 0) return
@@ -218,24 +246,31 @@ PlasmoidItem {
         if (acState.temp_max !== null) value = Math.min(value, acState.temp_max)
         generation++
         pendingTarget = value
+        batchTimer.stop()  // other pending changes go out together with the temperature
         tempTimer.restart()
     }
 
     Timer { id: settleTimer; interval: 4000; onTriggered: root.refresh() }
+    Timer { id: batchTimer; interval: 400; onTriggered: root.flushBatch() }
     Timer {
         id: tempTimer
         interval: 700
         onTriggered: {
             const value = root.pendingTarget
             root.pendingTarget = NaN
-            if (isNaN(value) || !root.ready) return
+            if (isNaN(value) || !root.ready || (!root.boosting && value === root.acState.target_temp)) {
+                root.flushBatch()
+                return
+            }
             if (root.boosting) {  // aim the quick cool somewhere else
                 if (value !== root.quick.target)
                     root.send("boost", ["boost", value], { boost: Object.assign({}, root.quick, { target: value }) })
+                else
+                    root.flushBatch()
                 return
             }
-            if (value === root.acState.target_temp) return
-            root.send("temp", ["temp", value, "--mode", root.acState.mode], { target_temp: value })
+            root.queueSet({ temp: value }, { target_temp: value })
+            root.flushBatch()  // the −/+ clicks have already settled
         }
     }
     Timer { id: watchRetry; interval: 5 * 60 * 1000; onTriggered: root.watch() }

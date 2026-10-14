@@ -31,6 +31,8 @@ HERE = Path(__file__).resolve().parent
 POLL_INTERVAL_MS = 60_000
 LIVE_POLL_INTERVAL_MS = 5 * 60_000  # safety net while LG pushes changes to us
 TEMPERATURE_SEND_DELAY_MS = 700
+# Changes made within this long of each other go out as one command: the unit beeps once per command.
+BATCH_MS = 400
 # How long after the last command to read the unit back, giving it time to apply the change.
 SETTLE_MS = 4_000
 DEMO_LATENCY_S = 1.0
@@ -92,9 +94,10 @@ class AsyncRunner(QObject):
 class AcModel(QObject):
     """What the QML window shows and the actions it can take.
 
-    Changes show up immediately and are sent in the background, one at a time. A few seconds
-    after the last command the unit is read back to confirm; if LG rejects a command, that
-    read-back corrects the display.
+    Changes show up immediately and are sent in the background, one at a time; changes made in
+    quick succession are grouped into one command, so the unit beeps once. A few seconds after
+    the last command the unit is read back to confirm; if LG rejects a command, that read-back
+    corrects the display.
     """
 
     changed = Signal()
@@ -115,6 +118,7 @@ class AcModel(QObject):
         self.boost_service: BoostService | None = None
         self.pending_target: float | None = None
         self.in_flight = 0  # commands sent but not yet acknowledged
+        self._batch: dict = {}  # changes waiting to go out together (see BATCH_MS)
         self.generation = 0  # bumped on every user change, so stale refreshes can be dropped
         self._message = ""
         self._error_shown = False
@@ -127,6 +131,7 @@ class AcModel(QObject):
         self.poll_timer = QTimer(self, interval=POLL_INTERVAL_MS, timeout=self.refresh)
         self.temp_timer = QTimer(self, singleShot=True, interval=TEMPERATURE_SEND_DELAY_MS, timeout=self._send_target)
         self.settle_timer = QTimer(self, singleShot=True, interval=SETTLE_MS, timeout=self.refresh)
+        self.batch_timer = QTimer(self, singleShot=True, interval=BATCH_MS, timeout=self._flush)
 
     # ---------- properties for QML ----------
 
@@ -312,7 +317,7 @@ class AcModel(QObject):
         self._liveConnection.emit(await self.live.start() and self.live.connected)
 
     def _on_live_state(self, state: AcState) -> None:
-        if self.in_flight or self.pending_target is not None:
+        if self.in_flight or self._batch or self.pending_target is not None:
             return  # a change of ours is on its way; the read-back after it will catch up
         self._update(state)
 
@@ -337,7 +342,7 @@ class AcModel(QObject):
         )
 
     def _refreshed(self, state: AcState, generation: int) -> None:
-        if generation != self.generation or self.in_flight:
+        if generation != self.generation or self.in_flight or self._batch:
             return  # the user changed something meanwhile; a newer read-back is coming
         self._update(state)
 
@@ -357,17 +362,9 @@ class AcModel(QObject):
             # Hold the target from now on, so turning the unit back on doesn't resume full blast.
             changes = boost.finish_changes(self.boosting, self.state)
             self.boosting = None
-            self._send(self._stop_boost_then(self.controller.set_power(False)), power=False, **changes)
+            self._send(self.boost_service.stop(also={"power": False}), power=False, **changes)
             return
-        self._send(self.controller.set_power(on), power=on)
-
-    async def _stop_boost_then(self, coro) -> None:
-        try:
-            await self.boost_service.stop()
-        except BaseException:
-            coro.close()
-            raise
-        await coro
+        self._queue(power=on)
 
     @Slot()
     def startBoost(self) -> None:
@@ -405,34 +402,34 @@ class AcModel(QObject):
             return
         self.pending_target = None
         self.temp_timer.stop()
-        self._send(self.controller.set_mode(mode), mode=mode, can_set_temp=mode in self.state.temp_modes)
+        self._queue(mode=mode, can_set_temp=mode in self.state.temp_modes)
 
     @Slot(str)
     def setFanSpeed(self, speed: str) -> None:
         if self.state and speed != self.state.fan_speed:
-            self._send(self.controller.set_fan_speed(speed), fan_speed=speed)
+            self._queue(fan_speed=speed)
 
     @Slot(bool)
     def setSwing(self, on: bool) -> None:
         if self.state and self.state.can_swing and on != self.state.swing:
-            self._send(self.controller.set_swing(on), swing=on)
+            self._queue(swing=on)
 
     @Slot(bool)
     def setPowerSave(self, on: bool) -> None:
         if self.state and self.state.can_power_save and on != self.state.power_save:
-            self._send(self.controller.set_power_save(on), power_save=on)
+            self._queue(power_save=on)
 
     @Slot(bool)
     def setDisplayLight(self, on: bool) -> None:
         if self.state and self.state.can_display_light and on != self.state.display_light:
-            self._send(self.controller.set_display_light(on), display_light=on)
+            self._queue(display_light=on)
 
     @Slot(str, int)
     def setTimer(self, kind: str, minutes: int) -> None:
         """Start a countdown of `minutes` for kind start/stop/sleep; 0 cancels it."""
         if not self.state or kind not in self.state.timers:
             return
-        self._send(self.controller.set_timer(kind, minutes), **{f"timer_{kind}": minutes or None})
+        self._queue(**{f"timer_{kind}": minutes or None})
 
     @Slot(str)
     def applyPreset(self, preset_id: str) -> None:
@@ -458,12 +455,14 @@ class AcModel(QObject):
             value = min(value, state.temp_max)
         self.pending_target = value
         self.generation += 1
+        self.batch_timer.stop()  # other pending changes go out together with the temperature
         self.temp_timer.start()  # wait for clicks to settle before sending one command
         self.changed.emit()
 
     def _send_target(self) -> None:
         value, self.pending_target = self.pending_target, None
-        if value is None or self.state is None:
+        if value is None or self.state is None or (not self._boost_active() and value == self.state.target_temp):
+            self._flush()
             self.changed.emit()
             return
         if self._boost_active():  # aim the quick cool somewhere else; the unit stays on full blast
@@ -471,20 +470,38 @@ class AcModel(QObject):
                 self.boosting = replace(self.boosting, target=value)
                 self._send(self.boost_service.start(value))
             else:
+                self._flush()
                 self.changed.emit()
             return
-        if value == self.state.target_temp:
-            self.changed.emit()
-            return
-        self._send(self.controller.set_target_temperature(value, mode=self.state.mode), target_temp=value)
+        self._queue(target_temp=value)
+        self._flush()  # the −/+ clicks have already settled
+
+    def _queue(self, **changes) -> None:
+        """Show `changes` right away; send them shortly, together with any made meanwhile."""
+        self.generation += 1
+        self.settle_timer.stop()
+        self.state = replace(self.state, **changes)
+        self._batch.update(changes)
+        self.batch_timer.start()
+        self._set_message("Sending…")
+
+    def _flush(self) -> None:
+        self.batch_timer.stop()
+        changes, self._batch = self._batch, {}
+        if changes:
+            self._submit(self.controller.apply(changes, mode=self.state.mode))
 
     def _send(self, coro, **changes) -> None:
-        """Show `changes` right away, then send the command in the background."""
+        """Show `changes` right away, then send `coro` (a command of its own) in the background."""
+        self._flush()
         self.generation += 1
-        self.in_flight += 1
         self.settle_timer.stop()
         self.state = replace(self.state, **changes)
         self._set_message("Sending…")
+        self._submit(coro)
+
+    def _submit(self, coro) -> None:
+        self.in_flight += 1
         self.runner.submit(coro, self._command_done, self._command_failed)
 
     def _command_done(self, _result) -> None:
@@ -506,6 +523,11 @@ class AcModel(QObject):
 
     def close(self) -> None:
         self.poll_timer.stop()
+        if self._batch:  # don't drop a change made just before closing
+            try:
+                self.runner.run_sync(self.controller.apply(self._batch, mode=self.state.mode))
+            except Exception:
+                pass
         if self.live:
             try:
                 self.runner.run_sync(self.live.stop(), timeout=6)

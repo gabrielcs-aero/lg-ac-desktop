@@ -9,6 +9,8 @@ import json
 import time
 from pathlib import Path
 
+from thinqconnect import ThinQAPIException
+
 DEVICE_LIST = [
     {
         "deviceId": "test-device-id",
@@ -131,6 +133,7 @@ class DemoApi:
         self.commands = []
         self.latency = latency  # seconds each request takes, like a trip to LG's cloud
         self.delays: list[float] = []  # per-command overrides, consumed in order
+        self.refuse_combined = False  # reject commands that change more than one resource
         self.simulate_room = simulate_room
         self.clock = clock
         self.sim_time: float | None = None  # when the room temperature was last moved
@@ -179,6 +182,8 @@ class DemoApi:
     async def async_post_device_control(self, device_id, payload):
         await self._wait(self.delays.pop(0) if self.delays else None)
         payload = {resource: dict(values) for resource, values in payload.items()}
+        if self.refuse_combined and len(payload) > 1:
+            raise ThinQAPIException("1100", "Bad request", {})
         self.commands.append(payload)
         for resource, values in payload.items():
             if resource == "temperatureInUnits":
