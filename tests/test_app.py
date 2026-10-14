@@ -1,4 +1,5 @@
 import os
+import tempfile
 import unittest
 from unittest import mock
 
@@ -32,6 +33,12 @@ class AppTest(unittest.TestCase):
         patcher = mock.patch.object(app_module, "DEMO_LATENCY_S", 0.05)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # The demo unit lives in the cache folder; keep the tests away from the real one.
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        env = mock.patch.dict(os.environ, {"XDG_CACHE_HOME": self.dir.name})
+        env.start()
+        self.addCleanup(env.stop)
         self.runner = AsyncRunner()
         self.model = AcModel(self.runner, Config(), demo=True)
         self.engine = create_engine(self.model)
@@ -56,9 +63,16 @@ class AppTest(unittest.TestCase):
         wait_until(lambda: self.model.ready)
         self.model.setMode("AUTO")
         self.model.setFanSpeed("HIGH")
-        self.assertEqual((self.model.ac["mode"], self.model.ac["fan_speed"]), ("AUTO", "HIGH"))
+        self.model.nudge(1)
+        self.assertEqual((self.model.ac["mode"], self.model.ac["fan_speed"], self.model.ac["shown_target"]), ("AUTO", "HIGH", 22.5))
         self.assertEqual(self.model.message, "Sending…")
         self.assertTrue(wait_until(lambda: self.model.message == "Sent"))
+        # Changed together, so sent as one command: the unit beeps once.
+        self.assertEqual(self.model.controller._api.commands, [{
+            "airConJobMode": {"currentJobMode": "AUTO"},
+            "temperatureInUnits": {"autoTargetTemperature": 22.5, "unit": "C"},
+            "airFlow": {"windStrength": "HIGH"},
+        }])
         self.assertEqual(self.warnings, [])
 
     def test_extras_and_presets_show_immediately(self):
@@ -74,6 +88,23 @@ class AppTest(unittest.TestCase):
         self.model.refresh()
         self.assertTrue(wait_until(lambda: self.model.message == "Up to date"))
         self.assertEqual((self.model.ac["swing"], self.model.ac["timer_stop"], self.model.ac["power_save"]), (True, 90, True))
+        self.assertEqual(self.warnings, [])
+
+    def test_quick_cool(self):
+        self.model.start()
+        wait_until(lambda: self.model.ready)
+        with mock.patch.object(app_module.boost, "spawn_runner", return_value=0):
+            self.model.startBoost()  # room 26°, dial at 22°
+            ac = self.model.ac
+            self.assertEqual((ac["boost"]["active"], ac["shown_target"], ac["target_temp"], ac["fan_speed"]), (True, 22, 18, "HIGH"))
+            self.assertTrue(wait_until(lambda: self.model.message == "Sent"))
+            self.model.nudge(1)  # moves the quick cool's target, not the unit's setting
+            self.assertEqual((self.model.ac["shown_target"], self.model.ac["target_temp"]), (22.5, 18))
+            self.assertTrue(wait_until(lambda: self.model.ac["boost"]["target"] == 22.5 and self.model.message == "Sent"))
+            self.model.stopBoost()
+            ac = self.model.ac
+            self.assertEqual((ac["boost"]["active"], ac["target_temp"], ac["fan_speed"]), (False, 22.5, "MID"))
+            self.assertTrue(wait_until(lambda: self.model.message == "Sent"))
         self.assertEqual(self.warnings, [])
 
     def test_setup_screen_when_not_configured(self):

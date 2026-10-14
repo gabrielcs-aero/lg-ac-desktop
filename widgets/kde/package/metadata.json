@@ -7,7 +7,7 @@
         "Id": "io.github.gabrielcs-aero.lgac",
         "License": "MIT",
         "Name": "LG Air Conditioner",
-        "Version": "0.3",
+        "Version": "0.4",
         "Website": "https://github.com/gabrielcs-aero/lg-ac-desktop"
     },
     "KPackageStructure": "Plasma/Applet",

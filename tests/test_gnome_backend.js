@@ -20,6 +20,10 @@ const check = (name, ok, detail = '') => {
 const after = (ms, fn) => GLib.timeout_add(GLib.PRIORITY_DEFAULT, ms, () => { fn(); return GLib.SOURCE_REMOVE; });
 
 const backend = new AcBackend(cli, () => {});
+// Record every command the backend runs.
+const sent = [];
+const run = backend._run.bind(backend);
+backend._run = args => { sent.push(args); return run(args); };
 backend.refresh();
 
 after(3000, () => {
@@ -37,6 +41,9 @@ after(3000, () => {
 after(12000, () => {
     check('read-back confirms changes', backend.state.fan_speed === 'HIGH' && backend.state.mode === 'AUTO' &&
         backend.state.target_temp === 23, JSON.stringify(backend.state));
+    check('fan, mode and temperature went out as one command',
+        JSON.stringify(sent.filter(a => a[0] === 'set')) === JSON.stringify([['set', 'fan=HIGH', 'mode=AUTO', 'temp=23']]),
+        JSON.stringify(sent));
     check('status up to date', backend.message === 'Up to date', backend.message);
     backend.setFan('TURBO');
     check('rejected value shown optimistically', backend.state.fan_speed === 'TURBO');
@@ -69,6 +76,27 @@ after(32000, () => {
 
 after(38000, () => {
     check('live update arrives without a refresh', backend.state.mode === 'AUTO' && backend.live, `${backend.state.mode} live=${backend.live}`);
+    // Quick cool to the lowest temperature: switches to cool and runs flat out.
+    backend.setMode('COOL');
+    for (let i = 0; i < 30; i++)
+        backend.nudge(-1);
+    backend.startBoost();
+    check('quick cool shows immediately', backend.boosting && backend.shownTarget === 18 && backend.quick.label === 'Quick cool',
+        JSON.stringify(backend.quick));
+});
+
+after(48000, () => {
+    check('quick cool confirmed by read-back', backend.boosting && backend.state.fan_speed === 'HIGH' &&
+        backend.state.target_temp === 18 && !backend.presetActive(backend.state.presets.find(p => p.id === 'max_cool')),
+        JSON.stringify(backend.state));
+    backend.stopBoost();
+    check('stop shows immediately', !backend.boosting, JSON.stringify(backend.quick));
+});
+
+after(56000, () => {
+    // The fan and power save go back to what Eco had set before the quick cool.
+    check('stopped quick cool holds the target', !backend.boosting && backend.state.target_temp === 18 &&
+        backend.state.fan_speed === 'LOW' && backend.state.power_save === true, JSON.stringify(backend.state));
     backend.destroy();
     loop.quit();
 });

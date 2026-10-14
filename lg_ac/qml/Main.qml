@@ -39,6 +39,8 @@ ApplicationWindow {
     readonly property bool isOn: ready && ac.power === true
     readonly property color accent: isOn ? (modeColors[ac.mode] || "#3b82f6") : t.off
     readonly property bool canSetTemp: isOn && ac.can_set_temp && ac.shown_target !== null
+    readonly property var quick: ready ? ac.boost : ({ active: false, available: false, target: null, label: "Quick cool" })
+    readonly property bool boosting: quick.active
     function iconUrl(name) { return iconDir + name + ".svg" }
     function label(v) { return ready && ac.labels[v] ? ac.labels[v] : v }
     function fmt(v) { return v === null || v === undefined ? "–" : String(Math.round(v * 2) / 2) }
@@ -233,7 +235,8 @@ ApplicationWindow {
                                     }
                                     Label {
                                         Layout.alignment: Qt.AlignHCenter
-                                        text: !ready ? "" : !isOn ? "Off" : ac.can_set_temp ? "Target · °" + ac.unit : "No target in " + win.label(ac.mode)
+                                        text: !ready ? "" : !isOn ? "Off" : boosting ? quick.label + " · then holds"
+                                            : ac.can_set_temp ? "Target · °" + ac.unit : "No target in " + win.label(ac.mode)
                                         color: t.muted
                                         font.pixelSize: 13
                                     }
@@ -242,6 +245,12 @@ ApplicationWindow {
 
                             StepButton { text: "−"; direction: -1; anchors.verticalCenter: dial.verticalCenter; anchors.right: dial.left; anchors.rightMargin: -4 }
                             StepButton { text: "+"; direction: 1; anchors.verticalCenter: dial.verticalCenter; anchors.left: dial.right; anchors.leftMargin: -4 }
+                        }
+
+                        QuickButton {
+                            Layout.alignment: Qt.AlignHCenter
+                            Layout.topMargin: -6
+                            visible: ready && quick.available && ac.shown_target !== null
                         }
 
                         // Presets
@@ -619,7 +628,7 @@ ApplicationWindow {
         readonly property var tints: ({ sleep: "#8b5cf6", max_cool: "#3b82f6", eco: "#10b981" })
         readonly property color tint: tints[preset.id] || "#3b82f6"
         // A preset counts as active when nothing but its timer would change.
-        readonly property bool active: Object.keys(preset.changes).filter(k => k.indexOf("timer_") !== 0 && k !== "can_set_temp").length === 0
+        readonly property bool active: !boosting && Object.keys(preset.changes).filter(k => k.indexOf("timer_") !== 0 && k !== "can_set_temp").length === 0
         implicitHeight: 42
         hoverEnabled: true
         onClicked: acModel.applyPreset(preset.id)
@@ -652,6 +661,85 @@ ApplicationWindow {
                 Behavior on color { ColorAnimation { duration: 200 } }
             }
             Item { Layout.fillWidth: true }
+        }
+    }
+
+    // "Quick cool to 22°": full power until the room gets there, then hold it (lg_ac/boost.py).
+    component QuickButton: AbstractButton {
+        id: qb
+        readonly property color tint: quick.label === "Quick heat" ? modeColors.HEAT : modeColors.COOL
+        readonly property bool alreadyThere: !boosting && ac.current_temp !== null
+            && (quick.label === "Quick heat" ? ac.current_temp >= ac.shown_target : ac.current_temp <= ac.shown_target)
+        enabled: boosting || !alreadyThere
+        implicitHeight: 40
+        implicitWidth: qbRow.implicitWidth + 32
+        hoverEnabled: true
+        onClicked: boosting ? acModel.stopBoost() : acModel.startBoost()
+        Accessible.name: boosting ? "Stop " + quick.label.toLowerCase() : quick.label
+        ToolTip.visible: hovered
+        ToolTip.delay: 500
+        ToolTip.text: boosting
+            ? "Running at full power until the room reaches " + win.fmt(quick.target) + "°, then it holds that. Click to hold it now."
+            : alreadyThere ? "The room is already at " + win.fmt(ac.shown_target) + "°."
+            : "Full power until the room reaches " + win.fmt(ac.shown_target) + "°, then holds it there."
+        background: Rectangle {
+            radius: height / 2
+            color: boosting ? qb.tint : qb.hovered ? t.raised : t.card
+            border.color: boosting ? qb.tint : t.track
+            border.width: 1
+            Behavior on color { ColorAnimation { duration: 200 } }
+            // A soft glow that breathes while boosting.
+            Rectangle {
+                anchors.fill: parent
+                anchors.margins: -4
+                radius: height / 2
+                color: "transparent"
+                border.color: qb.tint
+                border.width: 2
+                visible: boosting
+                SequentialAnimation on opacity {
+                    running: boosting
+                    loops: Animation.Infinite
+                    NumberAnimation { from: 0.5; to: 0; duration: 1400; easing.type: Easing.OutQuad }
+                    PauseAnimation { duration: 300 }
+                }
+            }
+        }
+        contentItem: Item {
+            implicitWidth: qbRow.implicitWidth
+            implicitHeight: qbRow.implicitHeight
+            RowLayout {
+                id: qbRow
+                anchors.centerIn: parent
+                spacing: 8
+                opacity: qb.enabled ? 1 : 0.45
+                IconImage {
+                    source: win.iconUrl(quick.label === "Quick heat" ? "quick-heat" : "quick-cool")
+                    sourceSize: Qt.size(18, 18)
+                    color: boosting ? "white" : qb.tint
+                }
+                Label {
+                    text: boosting
+                        ? quick.label + "ing · " + win.fmt(ac.current_temp) + "° → " + win.fmt(quick.target) + "°"
+                        : quick.label + " to " + win.fmt(ac.shown_target) + "°"
+                    color: boosting ? "white" : t.text
+                    font.pixelSize: 13
+                    font.weight: Font.DemiBold
+                }
+                Rectangle {
+                    visible: boosting
+                    Layout.preferredWidth: 1
+                    Layout.preferredHeight: 16
+                    color: "white"
+                    opacity: 0.4
+                }
+                Label {
+                    visible: boosting
+                    text: "Stop"
+                    color: "white"
+                    font.pixelSize: 13
+                }
+            }
         }
     }
 

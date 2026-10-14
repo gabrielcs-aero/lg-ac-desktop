@@ -1,7 +1,8 @@
 // Talks to the air conditioner through this project's `lg-ac-cli` command.
 //
-// Changes are applied to `state` immediately and sent one at a time in the background.
-// A few seconds after the last command the unit is read back to confirm; reads that
+// Changes are applied to `state` immediately and sent one at a time in the background;
+// changes made in quick succession go out as one `lg-ac-cli set` command, so the unit beeps
+// once. A few seconds after the last command the unit is read back to confirm; reads that
 // started before a newer change are dropped so they can't undo it.
 //
 // Uses only GLib/Gio, so it also runs under plain `gjs` (see tests/test_gnome_backend.js).
@@ -11,9 +12,10 @@ import GLib from 'gi://GLib';
 
 Gio._promisify(Gio.Subprocess.prototype, 'communicate_utf8_async');
 
-const SAFE_ARG = /^[A-Za-z0-9_.-]+$/;
+const SAFE_ARG = /^[A-Za-z0-9_.=-]+$/;
 const SETTLE_MS = 4000;
 const TEMP_DELAY_MS = 700;
+const BATCH_MS = 400; // changes within this long of each other become one command
 
 export class AcBackend {
     /**
@@ -30,6 +32,7 @@ export class AcBackend {
         this._generation = 0;
         this._pending = 0;
         this._queue = [];
+        this._batch = {}; // `lg-ac-cli set` fields waiting to go out together
         this._commandRunning = false;
         this._statusRunning = false;
         this._timers = new Map();
@@ -88,7 +91,21 @@ export class AcBackend {
 
     get ready() { return this.state !== null; }
     get isOn() { return this.ready && this.state.power === true; }
-    get shownTarget() { return this.pendingTarget ?? this.state?.target_temp ?? null; }
+    /** Quick cool: full power until the room reaches the target, then hold it (`lg-ac-cli boost`). */
+    get quick() { return this.state?.boost ?? {active: false, available: false, target: null, label: 'Quick cool'}; }
+    get boosting() { return this.quick.active === true; }
+    get quickHeat() { return this.quick.label === 'Quick heat'; }
+    // While boosting the unit is set to its coldest setting; show what we're aiming for instead.
+    get shownTarget() {
+        return this.pendingTarget ?? (this.boosting ? this.quick.target : this.state?.target_temp) ?? null;
+    }
+    /** The room is already at the target, so there's nothing to boost. */
+    get quickAlreadyThere() {
+        const current = this.state?.current_temp, target = this.shownTarget;
+        if (this.boosting || current === null || current === undefined || target === null)
+            return false;
+        return this.quickHeat ? current >= target : current <= target;
+    }
     get canSetTemp() { return this.isOn && this.state.can_set_temp && this.shownTarget !== null; }
     label(value) { return this.state?.labels?.[value] ?? value; }
 
@@ -101,7 +118,8 @@ export class AcBackend {
 
     /** A preset counts as active when nothing but its timer would change. */
     presetActive(preset) {
-        return Object.keys(preset.changes).every(k => k.startsWith('timer_') || k === 'can_set_temp');
+        // While quick cooling, the unit's settings can match a preset without it being "on".
+        return !this.boosting && Object.keys(preset.changes).every(k => k.startsWith('timer_') || k === 'can_set_temp');
     }
 
     // ---------- commands ----------
@@ -125,7 +143,7 @@ export class AcBackend {
     }
 
     setPower(on) {
-        this._send('power', ['power', on ? 'on' : 'off'], {power: on});
+        this._queueSet({power: on ? 'on' : 'off'}, {power: on});
     }
 
     setMode(mode) {
@@ -133,23 +151,23 @@ export class AcBackend {
             return;
         this.pendingTarget = null;
         this._clearTimer('temp');
-        this._send('mode', ['mode', mode], {mode, can_set_temp: this.state.temp_modes.includes(mode)});
+        this._queueSet({mode}, {mode, can_set_temp: this.state.temp_modes.includes(mode)});
     }
 
     setFan(speed) {
         if (this.ready && speed !== this.state.fan_speed)
-            this._send('fan', ['fan', speed], {fan_speed: speed});
+            this._queueSet({fan: speed}, {fan_speed: speed});
     }
 
     /** command: "swing" | "power-save" | "display"; field: the matching state field. */
     setToggle(command, field, on) {
         if (this.ready && this.state[field] !== on)
-            this._send(command, [command, on ? 'on' : 'off'], {[field]: on});
+            this._queueSet({[command]: on ? 'on' : 'off'}, {[field]: on});
     }
 
     /** kind: "start" | "stop" | "sleep"; 0 minutes cancels. */
     setTimer(kind, minutes) {
-        this._send(`timer-${kind}`, ['timer', kind, String(minutes)], {[`timer_${kind}`]: minutes || null});
+        this._queueSet({[`timer-${kind}`]: String(minutes)}, {[`timer_${kind}`]: minutes || null});
     }
 
     applyPreset(preset) {
@@ -158,6 +176,24 @@ export class AcBackend {
         this.pendingTarget = null;
         this._clearTimer('temp');
         this._send('preset', ['preset', preset.id], preset.changes);
+    }
+
+    startBoost() {
+        const target = this.shownTarget;
+        if (!this.ready || target === null)
+            return;
+        this.pendingTarget = null;
+        this._clearTimer('temp');
+        this._send('boost', ['boost', String(target)], {power: true, boost: {...this.quick, active: true, target}});
+    }
+
+    stopBoost() {
+        if (!this.boosting)
+            return;
+        const target = this.quick.target;
+        this.pendingTarget = null;
+        this._clearTimer('temp');
+        this._send('boost', ['boost', 'off'], {target_temp: target, boost: {...this.quick, active: false, target: null}});
     }
 
     nudge(direction) {
@@ -171,6 +207,7 @@ export class AcBackend {
             value = Math.min(value, max);
         this._generation++;
         this.pendingTarget = value;
+        this._clearTimer('batch'); // other pending changes go out together with the temperature
         this._setTimer('temp', TEMP_DELAY_MS, () => this._sendTarget());
         this._changed();
     }
@@ -180,12 +217,57 @@ export class AcBackend {
     _sendTarget() {
         const value = this.pendingTarget;
         this.pendingTarget = null;
-        if (value === null || !this.ready || value === this.state.target_temp)
+        if (value === null || !this.ready || (!this.boosting && value === this.state.target_temp)) {
+            this._flushBatch();
+            this._changed();
             return;
-        this._send('temp', ['temp', String(value), '--mode', this.state.mode], {target_temp: value});
+        }
+        if (this.boosting) { // aim the quick cool somewhere else
+            if (value !== this.quick.target)
+                this._send('boost', ['boost', String(value)], {boost: {...this.quick, target: value}});
+            else
+                this._flushBatch();
+            this._changed();
+            return;
+        }
+        this._queueSet({temp: String(value)}, {target_temp: value});
+        this._flushBatch(); // the −/+ clicks have already settled
     }
 
+    /** Simple changes wait briefly so ones made together become a single command (one beep). */
+    _queueSet(fields, changes) {
+        this._generation++;
+        this.errorShown = false;
+        this._clearTimer('settle');
+        if (this.state)
+            this.state = {...this.state, ...changes};
+        if (Object.keys(this._batch).length === 0)
+            this._pending++; // the batch counts as one command
+        Object.assign(this._batch, fields);
+        this.message = 'Sending…';
+        this._setTimer('batch', BATCH_MS, () => this._flushBatch());
+        this._changed();
+    }
+
+    _flushBatch() {
+        this._clearTimer('batch');
+        if (Object.keys(this._batch).length === 0)
+            return;
+        const fields = this._batch;
+        this._batch = {};
+        const waiting = this._queue.find(c => c.kind === 'set');
+        if (waiting) { // join the one not yet sent
+            Object.assign(waiting.fields, fields);
+            this._pending--;
+        } else {
+            this._queue.push({kind: 'set', fields});
+        }
+        this._pump();
+    }
+
+    /** A command of its own (presets, quick cool). */
     _send(kind, args, changes) {
+        this._flushBatch();
         this._generation++;
         this.errorShown = false;
         this._clearTimer('settle');
@@ -207,7 +289,8 @@ export class AcBackend {
     _pump() {
         if (this._commandRunning || this._queue.length === 0)
             return;
-        const {args} = this._queue.shift();
+        const next = this._queue.shift();
+        const args = next.kind === 'set' ? ['set', ...Object.entries(next.fields).map(([k, v]) => `${k}=${v}`)] : next.args;
         this._commandRunning = true;
         this._run(args).then(result => {
             this._commandRunning = false;

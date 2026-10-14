@@ -5,6 +5,11 @@ Responses follow the ThinQ Connect API format; the values are made up.
 
 import asyncio
 import copy
+import json
+import time
+from pathlib import Path
+
+from thinqconnect import ThinQAPIException
 
 DEVICE_LIST = [
     {
@@ -112,14 +117,50 @@ _TIMER_FLAGS = {
 }
 
 
+# The simulated room: with the unit off it drifts toward ROOM_C; when cooling it moves 0.5°
+# toward the setpoint every few seconds (faster with a strong fan).
+ROOM_C = 30.0
+_SECONDS_PER_STEP = {"HIGH": 6, "MID_HIGH": 9, "MID": 12}
+_SECONDS_PER_STEP_DEFAULT = 18
+_SECONDS_PER_STEP_WARMING = 45
+
+
 class DemoApi:
     """Stands in for ThinQApi: serves the sample data and applies commands to it."""
 
-    def __init__(self, latency: float = 0):
+    def __init__(self, latency: float = 0, simulate_room: bool = False, clock=time.time):
         self.status = copy.deepcopy(STATUS)
         self.commands = []
         self.latency = latency  # seconds each request takes, like a trip to LG's cloud
         self.delays: list[float] = []  # per-command overrides, consumed in order
+        self.refuse_combined = False  # reject commands that change more than one resource
+        self.simulate_room = simulate_room
+        self.clock = clock
+        self.sim_time: float | None = None  # when the room temperature was last moved
+
+    def _simulate(self) -> None:
+        now = self.clock()
+        if self.sim_time is None:
+            self.sim_time = now
+            return
+        celsius = next(e for e in self.status["temperatureInUnits"] if e["unit"] == "C")
+        current = celsius["currentTemperature"]
+        cooling = (self.status["operation"]["airConOperationMode"] == "POWER_ON"
+                   and self.status["airConJobMode"]["currentJobMode"] in ("COOL", "AUTO"))
+        goal = celsius["targetTemperature"] if cooling else ROOM_C
+        if goal < current:
+            period = _SECONDS_PER_STEP.get(self.status["airFlow"].get("windStrength"), _SECONDS_PER_STEP_DEFAULT)
+        else:
+            period = _SECONDS_PER_STEP_WARMING
+        steps = int((now - self.sim_time) // period)
+        if steps == 0:
+            return
+        self.sim_time += steps * period
+        current = max(goal, current - 0.5 * steps) if goal < current else min(goal, current + 0.5 * steps)
+        celsius["currentTemperature"] = current
+        for entry in self.status["temperatureInUnits"]:
+            if entry["unit"] == "F":
+                entry["currentTemperature"] = round(current * 9 / 5 + 32)
 
     async def _wait(self, delay=None):
         delay = self.latency if delay is None else delay
@@ -134,11 +175,15 @@ class DemoApi:
 
     async def async_get_device_status(self, device_id):
         await self._wait()
+        if self.simulate_room:
+            self._simulate()
         return copy.deepcopy(self.status)
 
     async def async_post_device_control(self, device_id, payload):
         await self._wait(self.delays.pop(0) if self.delays else None)
         payload = {resource: dict(values) for resource, values in payload.items()}
+        if self.refuse_combined and len(payload) > 1:
+            raise ThinQAPIException("1100", "Bad request", {})
         self.commands.append(payload)
         for resource, values in payload.items():
             if resource == "temperatureInUnits":
@@ -167,3 +212,45 @@ class DemoApi:
                 # Setting only the hours clears any leftover minutes, like the real unit.
                 if key.startswith("relativeHour"):
                     timer.setdefault(key.replace("Hour", "Minute"), 0)
+
+
+class FileDemoApi(DemoApi):
+    """A DemoApi kept in a file, so the app, the command line and the panel widgets all share
+    one simulated unit, with a room that warms up and cools down."""
+
+    def __init__(self, path: Path, latency: float = 0, clock=time.time):
+        super().__init__(latency=latency, simulate_room=True, clock=clock)
+        self.path = path
+
+    def _load(self) -> None:
+        try:
+            data = json.loads(self.path.read_text())
+        except (FileNotFoundError, ValueError):
+            return
+        if isinstance(data, dict) and isinstance(data.get("status"), dict):
+            self.status, self.sim_time = data["status"], data.get("sim_time")
+
+    def _save(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"status": self.status, "sim_time": self.sim_time}))
+        tmp.replace(self.path)
+
+    async def async_get_device_status(self, device_id):
+        self._load()
+        before = (copy.deepcopy(self.status), self.sim_time)
+        result = await super().async_get_device_status(device_id)
+        if (self.status, self.sim_time) != before:  # only write (and wake watchers) on a change
+            self._save()
+        return result
+
+    async def async_post_device_control(self, device_id, payload):
+        await self._wait(self.delays.pop(0) if self.delays else None)
+        self._load()  # another process may have changed the unit while we waited
+        latency, self.latency = self.latency, 0
+        try:
+            result = await super().async_post_device_control(device_id, payload)
+        finally:
+            self.latency = latency
+        self._save()
+        return result

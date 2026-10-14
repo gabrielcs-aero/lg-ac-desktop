@@ -11,6 +11,7 @@ Control an **LG ThinQ air conditioner** (split / wall-mounted AC) from your **Li
 - Power, mode (cool, dry, fan, auto, and heat on models that have it), target temperature and fan speed
 - Swing, power save and the unit's display light
 - On/off and sleep timers
+- **Quick cool**: full power until the room reaches your temperature, then it holds it there
 - One-click presets: **Sleep**, **Max cool**, **Eco**
 - Live updates: changes made with the remote or the ThinQ app show up within seconds
 - Panel widgets for KDE Plasma 6 and GNOME 45–49, plus a command-line tool
@@ -64,6 +65,7 @@ lg-ac-cli status              # current state as JSON
 lg-ac-cli temp 23 --mode COOL
 lg-ac-cli timer stop 90       # turn off in 90 minutes
 lg-ac-cli preset sleep
+lg-ac-cli boost 22            # quick cool to 22°, then hold it
 lg-ac-cli --help              # all commands
 ```
 

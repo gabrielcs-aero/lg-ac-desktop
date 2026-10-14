@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass, field
 
-from thinqconnect import ThinQApi
+from thinqconnect import ThinQApi, ThinQAPIException
 from thinqconnect.devices.air_conditioner import AirConditionerDevice
 from thinqconnect.devices.const import Property as P
 
@@ -30,6 +31,22 @@ _TIMER_HOUR_PROP = {
     "stop": P.RELATIVE_HOUR_TO_STOP,
     "sleep": P.SLEEP_TIMER_RELATIVE_HOUR_TO_STOP,
 }
+_TIMER_MINUTE_PROP = {
+    "start": P.RELATIVE_MINUTE_TO_START,
+    "stop": P.RELATIVE_MINUTE_TO_STOP,
+    "sleep": P.SLEEP_TIMER_RELATIVE_MINUTE_TO_STOP,
+}
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def _merge(payloads: list[dict]) -> dict:
+    """Combine control payloads ({resource: {key: value}}) into one."""
+    merged: dict = {}
+    for payload in payloads:
+        for resource, values in payload.items():
+            merged.setdefault(resource, {}).update(values)
+    return merged
 
 
 @dataclass(frozen=True)
@@ -169,88 +186,108 @@ class AcController:
         )
 
     # Commands only send; call refresh() afterwards to read back what the unit reports.
+    # The unit beeps once per command, so changes made together go out as one command.
 
     async def set_power(self, on: bool) -> None:
-        async with self._command_lock:
-            await self._require_device().set_air_con_operation_mode(POWER_ON if on else POWER_OFF)
+        await self.apply({"power": on})
 
     async def set_mode(self, mode: str) -> None:
-        async with self._command_lock:
-            await self._require_device().set_current_job_mode(mode)
+        await self.apply({"mode": mode})
 
     async def set_fan_speed(self, speed: str) -> None:
-        async with self._command_lock:
-            await self._require_device().set_wind_strength(speed)
+        await self.apply({"fan_speed": speed})
 
     async def set_swing(self, on: bool) -> None:
-        async with self._command_lock:
-            await self._require_device().set_wind_rotate_up_down(on)
+        await self.apply({"swing": on})
 
     async def set_power_save(self, on: bool) -> None:
-        async with self._command_lock:
-            await self._require_device().set_power_save_enabled(on)
+        await self.apply({"power_save": on})
 
     async def set_display_light(self, on: bool) -> None:
-        async with self._command_lock:
-            await self._require_device().set_display_light("ON" if on else "OFF")
+        await self.apply({"display_light": on})
 
     async def set_timer(self, kind: str, minutes: int) -> None:
         """Start a countdown timer of `minutes`; 0 cancels it."""
         if kind not in TIMER_KINDS:
             raise ValueError(f"Unknown timer {kind!r}.")
-        if minutes == 0:
-            return await self.cancel_timer(kind)
-        if not 1 <= minutes <= MAX_TIMER_MINUTES:
-            raise ValueError("Timers can be set from 1 minute to 24 hours.")
-        device = self._require_device()
-        hours, mins = divmod(int(minutes), 60)
-        setter = {
-            "start": device.set_relative_time_to_start,
-            "stop": device.set_relative_time_to_stop,
-            "sleep": device.set_sleep_timer_relative_time_to_stop,
-        }[kind]
-        async with self._command_lock:
-            await setter(hours, mins)
+        await self.apply({f"timer_{kind}": minutes})
 
     async def cancel_timer(self, kind: str) -> None:
-        # The SDK has no call for this, so send the documented payload directly.
-        resource, flag, _, _ = _TIMER_FIELDS[kind]
-        device = self._require_device()
-        async with self._command_lock:
-            await self._api.async_post_device_control(device_id=device.device_id, payload={resource: {flag: "UNSET"}})
-
-    async def apply(self, changes: dict) -> None:
-        """Apply several changes (AcState field -> value) in a safe order, e.g. from a preset."""
-        from .presets import APPLY_ORDER
-
-        mode = changes.get("mode")
-        steps = {
-            "power": self.set_power,
-            "mode": self.set_mode,
-            "target_temp": lambda value: self.set_target_temperature(value, mode=mode),
-            "fan_speed": self.set_fan_speed,
-            "swing": self.set_swing,
-            "power_save": self.set_power_save,
-            "display_light": self.set_display_light,
-            "timer_start": lambda minutes: self.set_timer("start", minutes or 0),
-            "timer_stop": lambda minutes: self.set_timer("stop", minutes or 0),
-            "timer_sleep": lambda minutes: self.set_timer("sleep", minutes or 0),
-        }
-        for field in APPLY_ORDER:
-            if field in changes:
-                await steps[field](changes[field])
+        await self.set_timer(kind, 0)
 
     async def set_target_temperature(self, value: float, mode: str | None = None) -> None:
         """Set the target for `mode` (default: the last mode read from the unit)."""
-        device = self._require_device()
-        prop = self._target_temperature_prop(mode)
-        if prop is None:
-            raise ValueError("This air conditioner doesn't accept a target temperature in the current mode.")
-        if not device.profiles.check_range_attribute_writable(prop, value):
-            limits = self._writable_values(prop) or {}
-            raise ValueError(f"{value:g}° is outside the allowed range ({limits.get('min')}–{limits.get('max')}).")
+        await self.apply({"target_temp": value}, mode=mode)
+
+    async def apply(self, changes: dict, mode: str | None = None) -> None:
+        """Apply changes (AcState field -> value, e.g. from a preset) in one command.
+
+        A target temperature belongs to the mode in `changes`, else `mode`, else the current one.
+        Fields that aren't commands (like can_set_temp) are ignored.
+        """
+        from .presets import APPLY_ORDER
+
+        mode = changes.get("mode") or mode
+        parts = [self._payload(field, changes[field], mode) for field in APPLY_ORDER if field in changes]
+        if not parts:
+            return
         async with self._command_lock:
-            await device.do_multi_attribute_command({prop: value, P.TEMPERATURE_UNIT: self._unit})
+            if len(parts) == 1:
+                await self._post(parts[0])
+                return
+            try:
+                await self._post(_merge(parts))
+            except ThinQAPIException as error:
+                # Not every unit takes several settings at once (some refuse while off);
+                # fall back to one command each, in a safe order.
+                _LOGGER.info("Combined command refused (%s); sending one at a time", error)
+                for part in parts:
+                    await self._post(part)
+
+    async def _post(self, payload: dict) -> None:
+        await self._api.async_post_device_control(device_id=self._require_device().device_id, payload=payload)
+
+    def _payload(self, field: str, value, mode: str | None) -> dict:
+        """The control payload ({resource: {key: value}}) for one AcState field."""
+        profiles = self._require_device().profiles
+        if field == "power":
+            return profiles.get_enum_attribute_payload(P.AIR_CON_OPERATION_MODE, POWER_ON if value else POWER_OFF)
+        if field == "mode":
+            return profiles.get_enum_attribute_payload(P.CURRENT_JOB_MODE, value)
+        if field == "fan_speed":
+            return profiles.get_enum_attribute_payload(P.WIND_STRENGTH, value)
+        if field == "swing":
+            return profiles.get_attribute_payload(P.WIND_ROTATE_UP_DOWN, value)
+        if field == "power_save":
+            return profiles.get_attribute_payload(P.POWER_SAVE_ENABLED, value)
+        if field == "display_light":
+            return profiles.get_enum_attribute_payload(P.DISPLAY_LIGHT, "ON" if value else "OFF")
+        if field == "target_temp":
+            prop = self._target_temperature_prop(mode)
+            if prop is None:
+                raise ValueError("This air conditioner doesn't accept a target temperature in the current mode.")
+            if not profiles.check_range_attribute_writable(prop, value):
+                limits = self._writable_values(prop) or {}
+                raise ValueError(f"{value:g}° is outside the allowed range ({limits.get('min')}–{limits.get('max')}).")
+            return _merge([profiles.get_attribute_payload(prop, value),
+                           profiles.get_attribute_payload(P.TEMPERATURE_UNIT, self._unit)])
+        if field.startswith("timer_"):
+            return self._timer_payload(field.removeprefix("timer_"), value or 0)
+        raise ValueError(f"Unknown setting {field!r}.")
+
+    def _timer_payload(self, kind: str, minutes: int) -> dict:
+        resource, flag, _, _ = _TIMER_FIELDS[kind]
+        if minutes == 0:
+            # The SDK has no call for cancelling, so use the documented payload directly.
+            return {resource: {flag: "UNSET"}}
+        if not 1 <= minutes <= MAX_TIMER_MINUTES:
+            raise ValueError("Timers can be set from 1 minute to 24 hours.")
+        hours, mins = divmod(int(minutes), 60)
+        profiles = self._require_device().profiles
+        parts = [profiles.get_attribute_payload(_TIMER_HOUR_PROP[kind], hours)]
+        if mins or kind != "stop":  # like the SDK: the stop timer leaves out zero minutes
+            parts.append(profiles.get_attribute_payload(_TIMER_MINUTE_PROP[kind], mins))
+        return _merge(parts)
 
     def _require_device(self) -> AirConditionerDevice:
         if self._device is None:

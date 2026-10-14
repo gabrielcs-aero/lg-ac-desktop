@@ -69,6 +69,18 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("Unknown preset", out["error"])
 
+    def test_set_sends_one_command(self):
+        with mock.patch.object(cli.FileDemoApi, "async_post_device_control",
+                               autospec=True, side_effect=cli.FileDemoApi.async_post_device_control) as post:
+            self.assertEqual(run_cli("--demo", "set", "mode=AUTO", "fan=HIGH", "temp=24.5", "swing=on", "timer-stop=90"), (0, {"ok": True}))
+        self.assertEqual(post.call_count, 1)
+        state = run_cli("--demo", "status")[1]["state"]
+        self.assertEqual((state["mode"], state["fan_speed"], state["target_temp"], state["swing"], state["timer_stop"]),
+                         ("AUTO", "HIGH", 24.5, True, 90))
+        code, out = run_cli("--demo", "set", "colour=red")
+        self.assertEqual(code, 1)
+        self.assertIn("KEY=VALUE", out["error"])
+
     def test_demo_watch_sees_changes_from_other_commands(self):
         import threading
         run_cli("--demo", "status")  # create the demo state
