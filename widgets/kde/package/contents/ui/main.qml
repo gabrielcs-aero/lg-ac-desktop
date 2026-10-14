@@ -44,12 +44,20 @@ PlasmoidItem {
         return timerVerbs[kind] + (m > 0 ? " " + duration(m) : "")
     }
     function presetActive(preset) {
-        return Object.keys(preset.changes).filter(k => k.indexOf("timer_") !== 0 && k !== "can_set_temp").length === 0
+        // While quick cooling, the unit's settings can match a preset without it being "on".
+        return !boosting && Object.keys(preset.changes).filter(k => k.indexOf("timer_") !== 0 && k !== "can_set_temp").length === 0
     }
 
     readonly property bool ready: acState !== null
     readonly property bool isOn: ready && acState.power === true
-    readonly property real shownTarget: isNaN(pendingTarget) ? (ready && acState.target_temp !== null ? acState.target_temp : NaN) : pendingTarget
+    // Quick cool: full power until the room reaches the target, then hold it (`lg-ac-cli boost`).
+    readonly property var quick: ready && acState.boost ? acState.boost : ({ active: false, available: false, target: null, label: "Quick cool" })
+    readonly property bool boosting: quick.active
+    readonly property bool quickHeat: quick.label === "Quick heat"
+    // While boosting the unit is set to its coldest setting; show what we're aiming for instead.
+    readonly property real shownTarget: !isNaN(pendingTarget) ? pendingTarget
+        : boosting ? quick.target
+        : ready && acState.target_temp !== null ? acState.target_temp : NaN
     readonly property bool canSetTemp: ready && isOn && acState.can_set_temp && !isNaN(shownTarget)
     readonly property string unit: ready ? "°" + acState.unit : "°"
 
@@ -65,6 +73,7 @@ PlasmoidItem {
     toolTipMainText: ready ? acState.alias : "LG Air Conditioner"
     toolTipSubText: !ready ? message
         : !isOn ? i18n("Off · Room %1%2", formatTemp(acState.current_temp), unit)
+        : boosting ? i18n("%1 to %2%4 · Room %3%4", quick.label, formatTemp(shownTarget), formatTemp(acState.current_temp), unit)
         : i18n("%1 · Set to %2%4 · Room %3%4", label(acState.mode), formatTemp(shownTarget), formatTemp(acState.current_temp), unit)
 
     onExpandedChanged: if (expanded) refresh()
@@ -189,6 +198,19 @@ PlasmoidItem {
         tempTimer.stop()
         send("preset", ["preset", preset.id], preset.changes)
     }
+    function startBoost() {
+        if (!ready || isNaN(shownTarget)) return
+        pendingTarget = NaN
+        tempTimer.stop()
+        send("boost", ["boost", shownTarget], { power: true, boost: Object.assign({}, quick, { active: true, target: shownTarget }) })
+    }
+    function stopBoost() {
+        if (!boosting) return
+        const target = quick.target
+        pendingTarget = NaN
+        tempTimer.stop()
+        send("boost", ["boost", "off"], { target_temp: target, boost: Object.assign({}, quick, { active: false, target: null }) })
+    }
     function nudge(direction) {
         if (!canSetTemp) return
         let value = shownTarget + direction * acState.temp_step
@@ -206,7 +228,13 @@ PlasmoidItem {
         onTriggered: {
             const value = root.pendingTarget
             root.pendingTarget = NaN
-            if (isNaN(value) || !root.ready || value === root.acState.target_temp) return
+            if (isNaN(value) || !root.ready) return
+            if (root.boosting) {  // aim the quick cool somewhere else
+                if (value !== root.quick.target)
+                    root.send("boost", ["boost", value], { boost: Object.assign({}, root.quick, { target: value }) })
+                return
+            }
+            if (value === root.acState.target_temp) return
             root.send("temp", ["temp", value, "--mode", root.acState.mode], { target_temp: value })
         }
     }
@@ -366,6 +394,7 @@ PlasmoidItem {
                         }
                         PlasmaComponents.Label {
                             text: !root.ready ? "" : !root.isOn ? i18n("Off")
+                                : root.boosting ? i18n("%1 · then holds", root.quick.label)
                                 : root.acState.can_set_temp ? i18n("Target · %1", root.label(root.acState.mode))
                                 : i18n("No target in %1", root.label(root.acState.mode))
                             opacity: 0.65
@@ -376,6 +405,11 @@ PlasmoidItem {
 
                 StepButton { text: "+"; direction: 1; Accessible.name: i18n("Raise temperature") }
                 Item { Layout.fillWidth: true }
+            }
+
+            QuickButton {
+                Layout.alignment: Qt.AlignHCenter
+                visible: root.ready && root.quick.available && !isNaN(root.shownTarget)
             }
 
             // Presets
@@ -597,6 +631,86 @@ PlasmoidItem {
                 font: Kirigami.Theme.smallFont
             }
             Item { Layout.fillWidth: true }
+        }
+    }
+
+    // "Quick cool to 22°", or while it runs "Quick cooling · 26° → 22° | Stop".
+    component QuickButton: PlasmaComponents.AbstractButton {
+        id: qb
+        readonly property color tint: root.quickHeat ? root.modeColors.HEAT : root.modeColors.COOL
+        readonly property bool alreadyThere: !root.boosting && root.ready && root.acState.current_temp !== null
+            && (root.quickHeat ? root.acState.current_temp >= root.shownTarget : root.acState.current_temp <= root.shownTarget)
+        enabled: root.boosting || !alreadyThere
+        implicitHeight: Kirigami.Units.gridUnit * 1.8
+        implicitWidth: qbRow.implicitWidth + Kirigami.Units.gridUnit * 1.6
+        onClicked: root.boosting ? root.stopBoost() : root.startBoost()
+        Accessible.name: root.boosting ? i18n("Stop %1", root.quick.label) : root.quick.label
+        PlasmaComponents.ToolTip {
+            text: root.boosting
+                ? i18n("Running at full power until the room reaches %1°, then it holds that. Click to hold it now.", root.formatTemp(root.quick.target))
+                : qb.alreadyThere ? i18n("The room is already at %1°.", root.formatTemp(root.shownTarget))
+                : i18n("Full power until the room reaches %1°, then holds it there.", root.formatTemp(root.shownTarget))
+        }
+        background: Rectangle {
+            radius: height / 2
+            color: root.boosting ? qb.tint
+                 : Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, qb.hovered ? 0.12 : 0.06)
+            border.width: qb.visualFocus ? 2 : 0
+            border.color: Kirigami.Theme.focusColor
+            Behavior on color { ColorAnimation { duration: Kirigami.Units.shortDuration } }
+            Rectangle {  // breathes while boosting
+                anchors.fill: parent
+                anchors.margins: -3
+                radius: height / 2
+                color: "transparent"
+                border.color: qb.tint
+                border.width: 2
+                visible: root.boosting
+                SequentialAnimation on opacity {
+                    running: root.boosting && root.expanded
+                    loops: Animation.Infinite
+                    NumberAnimation { from: 0.5; to: 0; duration: 1400; easing.type: Easing.OutQuad }
+                    PauseAnimation { duration: 300 }
+                }
+            }
+        }
+        contentItem: Item {
+            implicitWidth: qbRow.implicitWidth
+            implicitHeight: qbRow.implicitHeight
+            RowLayout {
+                id: qbRow
+                anchors.centerIn: parent
+                spacing: Kirigami.Units.smallSpacing
+                opacity: qb.enabled ? 1 : 0.45
+                Kirigami.Icon {
+                    source: Qt.resolvedUrl("../icons/" + (root.quickHeat ? "quick-heat" : "quick-cool") + ".svg")
+                    isMask: true
+                    color: root.boosting ? "white" : qb.tint
+                    Layout.preferredWidth: Kirigami.Units.iconSizes.small
+                    Layout.preferredHeight: Kirigami.Units.iconSizes.small
+                }
+                PlasmaComponents.Label {
+                    text: !root.ready ? ""
+                        : root.boosting ? i18n("%1 · %2° → %3°", root.quickHeat ? i18n("Quick heating") : i18n("Quick cooling"),
+                                               root.formatTemp(root.acState.current_temp), root.formatTemp(root.quick.target))
+                        : i18n("%1 to %2°", root.quick.label, root.formatTemp(root.shownTarget))
+                    color: root.boosting ? "white" : Kirigami.Theme.textColor
+                    font: Kirigami.Theme.smallFont
+                }
+                Rectangle {
+                    visible: root.boosting
+                    Layout.preferredWidth: 1
+                    Layout.preferredHeight: Kirigami.Units.gridUnit * 0.8
+                    color: "white"
+                    opacity: 0.4
+                }
+                PlasmaComponents.Label {
+                    visible: root.boosting
+                    text: i18n("Stop")
+                    color: "white"
+                    font: Kirigami.Theme.smallFont
+                }
+            }
         }
     }
 

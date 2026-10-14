@@ -69,6 +69,27 @@ after(32000, () => {
 
 after(38000, () => {
     check('live update arrives without a refresh', backend.state.mode === 'AUTO' && backend.live, `${backend.state.mode} live=${backend.live}`);
+    // Quick cool to the lowest temperature: switches to cool and runs flat out.
+    backend.setMode('COOL');
+    for (let i = 0; i < 30; i++)
+        backend.nudge(-1);
+    backend.startBoost();
+    check('quick cool shows immediately', backend.boosting && backend.shownTarget === 18 && backend.quick.label === 'Quick cool',
+        JSON.stringify(backend.quick));
+});
+
+after(48000, () => {
+    check('quick cool confirmed by read-back', backend.boosting && backend.state.fan_speed === 'HIGH' &&
+        backend.state.target_temp === 18 && !backend.presetActive(backend.state.presets.find(p => p.id === 'max_cool')),
+        JSON.stringify(backend.state));
+    backend.stopBoost();
+    check('stop shows immediately', !backend.boosting, JSON.stringify(backend.quick));
+});
+
+after(56000, () => {
+    // The fan and power save go back to what Eco had set before the quick cool.
+    check('stopped quick cool holds the target', !backend.boosting && backend.state.target_temp === 18 &&
+        backend.state.fan_speed === 'LOW' && backend.state.power_save === true, JSON.stringify(backend.state));
     backend.destroy();
     loop.quit();
 });

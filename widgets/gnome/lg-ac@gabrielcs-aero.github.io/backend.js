@@ -88,7 +88,21 @@ export class AcBackend {
 
     get ready() { return this.state !== null; }
     get isOn() { return this.ready && this.state.power === true; }
-    get shownTarget() { return this.pendingTarget ?? this.state?.target_temp ?? null; }
+    /** Quick cool: full power until the room reaches the target, then hold it (`lg-ac-cli boost`). */
+    get quick() { return this.state?.boost ?? {active: false, available: false, target: null, label: 'Quick cool'}; }
+    get boosting() { return this.quick.active === true; }
+    get quickHeat() { return this.quick.label === 'Quick heat'; }
+    // While boosting the unit is set to its coldest setting; show what we're aiming for instead.
+    get shownTarget() {
+        return this.pendingTarget ?? (this.boosting ? this.quick.target : this.state?.target_temp) ?? null;
+    }
+    /** The room is already at the target, so there's nothing to boost. */
+    get quickAlreadyThere() {
+        const current = this.state?.current_temp, target = this.shownTarget;
+        if (this.boosting || current === null || current === undefined || target === null)
+            return false;
+        return this.quickHeat ? current >= target : current <= target;
+    }
     get canSetTemp() { return this.isOn && this.state.can_set_temp && this.shownTarget !== null; }
     label(value) { return this.state?.labels?.[value] ?? value; }
 
@@ -101,7 +115,8 @@ export class AcBackend {
 
     /** A preset counts as active when nothing but its timer would change. */
     presetActive(preset) {
-        return Object.keys(preset.changes).every(k => k.startsWith('timer_') || k === 'can_set_temp');
+        // While quick cooling, the unit's settings can match a preset without it being "on".
+        return !this.boosting && Object.keys(preset.changes).every(k => k.startsWith('timer_') || k === 'can_set_temp');
     }
 
     // ---------- commands ----------
@@ -160,6 +175,24 @@ export class AcBackend {
         this._send('preset', ['preset', preset.id], preset.changes);
     }
 
+    startBoost() {
+        const target = this.shownTarget;
+        if (!this.ready || target === null)
+            return;
+        this.pendingTarget = null;
+        this._clearTimer('temp');
+        this._send('boost', ['boost', String(target)], {power: true, boost: {...this.quick, active: true, target}});
+    }
+
+    stopBoost() {
+        if (!this.boosting)
+            return;
+        const target = this.quick.target;
+        this.pendingTarget = null;
+        this._clearTimer('temp');
+        this._send('boost', ['boost', 'off'], {target_temp: target, boost: {...this.quick, active: false, target: null}});
+    }
+
     nudge(direction) {
         if (!this.canSetTemp)
             return;
@@ -180,7 +213,16 @@ export class AcBackend {
     _sendTarget() {
         const value = this.pendingTarget;
         this.pendingTarget = null;
-        if (value === null || !this.ready || value === this.state.target_temp)
+        if (value === null || !this.ready)
+            return;
+        if (this.boosting) { // aim the quick cool somewhere else
+            if (value !== this.quick.target)
+                this._send('boost', ['boost', String(value)], {boost: {...this.quick, target: value}});
+            else
+                this._changed();
+            return;
+        }
+        if (value === this.state.target_temp)
             return;
         this._send('temp', ['temp', String(value), '--mode', this.state.mode], {target_temp: value});
     }

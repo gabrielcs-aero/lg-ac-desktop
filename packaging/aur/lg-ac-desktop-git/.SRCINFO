@@ -1,6 +1,6 @@
 pkgbase = lg-ac-desktop-git
 	pkgdesc = Control an LG ThinQ air conditioner from the desktop: app, KDE Plasma widget and GNOME Shell extension
-	pkgver = 0.3.0.r0.g0000000
+	pkgver = 0.4.0.r0.g0000000
 	pkgrel = 1
 	url = https://github.com/gabrielcs-aero/lg-ac-desktop
 	arch = x86_64

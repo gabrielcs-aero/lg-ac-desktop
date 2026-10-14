@@ -129,6 +129,23 @@ class LgAcIndicator extends PanelMenu.Button {
         tempItem.add_child(tempRow);
         this.menu.addMenuItem(tempItem);
 
+        // Quick cool: full power until the room reaches the target, then hold it
+        this._quickItem = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false});
+        const quickContent = new St.BoxLayout({style_class: 'lg-ac-quick-content'});
+        this._quickIcon = new St.Icon({gicon: this._icon('quick-cool'), icon_size: 16});
+        this._quickLabel = new St.Label({y_align: Clutter.ActorAlign.CENTER});
+        quickContent.add_child(this._quickIcon);
+        quickContent.add_child(this._quickLabel);
+        this._quick = new St.Button({child: quickContent, style_class: 'lg-ac-quick', x_expand: true, x_align: Clutter.ActorAlign.CENTER});
+        this._quick.connect('clicked', () => {
+            if (this._backend.boosting)
+                this._backend.stopBoost();
+            else
+                this._backend.startBoost();
+        });
+        this._quickItem.add_child(this._quick);
+        this.menu.addMenuItem(this._quickItem);
+
         // Presets (filled in once known)
         const presetItem = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false});
         this._presetRow = new St.BoxLayout({x_expand: true, style_class: 'lg-ac-preset-row'});
@@ -353,10 +370,25 @@ class LgAcIndicator extends PanelMenu.Button {
 
         this._targetLabel.text = s ? `${formatTemp(b.shownTarget)}°${s.unit}` : '–';
         this._targetLabel.opacity = b.isOn ? 255 : 128;
-        this._targetCaption.text = !s ? '' : !b.isOn ? 'Off' : s.can_set_temp ? 'Target' : `No target in ${b.label(s.mode)}`;
+        this._targetCaption.text = !s ? '' : !b.isOn ? 'Off' : b.boosting ? `${b.quick.label} · then holds`
+            : s.can_set_temp ? 'Target' : `No target in ${b.label(s.mode)}`;
         this._minus.reactive = this._plus.reactive = b.canSetTemp;
         this._minus.opacity = this._plus.opacity = b.canSetTemp ? 255 : 90;
         this._dial.queue_repaint();
+
+        const quickColor = b.quickHeat ? MODE_COLORS.HEAT : MODE_COLORS.COOL;
+        this._quickItem.visible = Boolean(s) && b.quick.available && b.shownTarget !== null;
+        if (this._quickItem.visible) {
+            this._quickIcon.gicon = this._icon(b.quickHeat ? 'quick-heat' : 'quick-cool');
+            this._quickLabel.text = b.boosting
+                ? `${b.quickHeat ? 'Quick heating' : 'Quick cooling'} · ${formatTemp(s.current_temp)}° → ${formatTemp(b.quick.target)}°   |   Stop`
+                : `${b.quick.label} to ${formatTemp(b.shownTarget)}°`;
+            this._quick.style = b.boosting ? `background-color: ${quickColor}; color: white;` : '';
+            this._quickIcon.style = b.boosting ? 'color: white;' : `color: ${quickColor};`;
+            this._quick.reactive = !b.quickAlreadyThere;
+            this._quick.opacity = b.quickAlreadyThere ? 115 : 255;
+            this._quick.accessible_name = b.boosting ? `Stop ${b.quick.label.toLowerCase()}` : b.quick.label;
+        }
 
         if (s) {
             if ([...this._modeButtons.keys()].join() !== s.modes.join()) {
