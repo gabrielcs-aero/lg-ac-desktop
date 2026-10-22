@@ -39,6 +39,12 @@ _TIMER_MINUTE_PROP = {
 
 _LOGGER = logging.getLogger(__name__)
 
+# The unit got the command but didn't carry it out (2208), usually because it was still busy
+# with the previous one, or answered too slowly (2209). Settings are absolute, so resending
+# is safe; these are the waits before each retry.
+TRANSIENT_CODES = {"2208", "2209"}
+RETRY_DELAYS_S = (1.5, 3.0)
+
 
 def _merge(payloads: list[dict]) -> dict:
     """Combine control payloads ({resource: {key: value}}) into one."""
@@ -238,6 +244,8 @@ class AcController:
             try:
                 await self._post(_merge(parts))
             except ThinQAPIException as error:
+                if str(error.code) in TRANSIENT_CODES:
+                    raise  # already retried; splitting it up would only make it worse
                 # Not every unit takes several settings at once (some refuse while off);
                 # fall back to one command each, in a safe order.
                 _LOGGER.info("Combined command refused (%s); sending one at a time", error)
@@ -245,7 +253,16 @@ class AcController:
                     await self._post(part)
 
     async def _post(self, payload: dict) -> None:
-        await self._api.async_post_device_control(device_id=self._require_device().device_id, payload=payload)
+        device_id = self._require_device().device_id
+        for delay in (*RETRY_DELAYS_S, None):
+            try:
+                await self._api.async_post_device_control(device_id=device_id, payload=payload)
+                return
+            except ThinQAPIException as error:
+                if str(error.code) not in TRANSIENT_CODES or delay is None:
+                    raise
+                _LOGGER.info("Unit didn't take the command (%s); retrying in %gs", error.code, delay)
+                await asyncio.sleep(delay)
 
     def _payload(self, field: str, value, mode: str | None) -> dict:
         """The control payload ({resource: {key: value}}) for one AcState field."""

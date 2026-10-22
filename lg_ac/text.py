@@ -23,6 +23,8 @@ ERROR_HINTS = {
     "1307": "check the country code in Settings.",
     "1308": "the token lacks control permission; create one that allows controlling devices.",
     "1222": "the air conditioner is offline. Check its Wi-Fi.",
+    "2208": "the unit didn't take the command, even after retrying. Try again in a moment.",
+    "2209": "the unit is responding slowly. Try again in a moment.",
     "2301": "turn on remote control for this unit in the ThinQ app.",
     "2304": "turn the air conditioner on first.",
     "2305": "this can't be changed in the current mode.",

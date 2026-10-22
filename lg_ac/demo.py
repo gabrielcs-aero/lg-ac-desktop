@@ -134,6 +134,7 @@ class DemoApi:
         self.latency = latency  # seconds each request takes, like a trip to LG's cloud
         self.delays: list[float] = []  # per-command overrides, consumed in order
         self.refuse_combined = False  # reject commands that change more than one resource
+        self.failures: list[str] = []  # error codes to raise on the next commands, in order
         self.simulate_room = simulate_room
         self.clock = clock
         self.sim_time: float | None = None  # when the room temperature was last moved
@@ -182,6 +183,8 @@ class DemoApi:
     async def async_post_device_control(self, device_id, payload):
         await self._wait(self.delays.pop(0) if self.delays else None)
         payload = {resource: dict(values) for resource, values in payload.items()}
+        if self.failures:
+            raise ThinQAPIException(self.failures.pop(0), "Fail device control", {})
         if self.refuse_combined and len(payload) > 1:
             raise ThinQAPIException("1100", "Bad request", {})
         self.commands.append(payload)
