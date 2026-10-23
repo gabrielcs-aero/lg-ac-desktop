@@ -1,9 +1,14 @@
 import unittest
 from dataclasses import replace
+from unittest import mock
 
+from thinqconnect import ThinQAPIException
+
+from lg_ac import controller as controller_module
 from lg_ac.controller import AcController
 from lg_ac.demo import DemoApi
 from lg_ac.presets import get_preset, plan, presets_for
+from lg_ac.text import describe_error
 
 
 class ExtrasTest(unittest.IsolatedAsyncioTestCase):
@@ -122,6 +127,20 @@ class PresetTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.api.commands, [{"airFlow": {"windStrength": "HIGH"}}, {"windDirection": {"rotateUpDown": True}}])
         s = await self.controller.refresh()
         self.assertEqual((s.fan_speed, s.swing), ("HIGH", True))
+
+    async def test_busy_unit_gets_the_same_command_again(self):
+        self.api.failures = ["2208", "2208"]
+        with mock.patch.object(controller_module, "RETRY_DELAYS_S", (0, 0)):
+            await self.controller.apply({"fan_speed": "HIGH", "swing": True})
+        self.assertEqual(self.api.commands, [{"airFlow": {"windStrength": "HIGH"}, "windDirection": {"rotateUpDown": True}}])
+
+    async def test_gives_up_after_retrying_without_splitting(self):
+        self.api.failures = ["2208"] * 3
+        with mock.patch.object(controller_module, "RETRY_DELAYS_S", (0, 0)):
+            with self.assertRaises(ThinQAPIException):
+                await self.controller.apply({"fan_speed": "HIGH", "swing": True})
+        self.assertEqual(self.api.commands, [])
+        self.assertIn("Try again", describe_error(ThinQAPIException("2208", "Fail device control", {})))
 
     def test_presets_for_lists_all_with_changes(self):
         data = presets_for(self.state)

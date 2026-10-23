@@ -78,7 +78,7 @@ PlasmoidItem {
         : boosting ? i18n("%1 to %2%4 · Room %3%4", quick.label, formatTemp(shownTarget), formatTemp(acState.current_temp), unit)
         : i18n("%1 · Set to %2%4 · Room %3%4", label(acState.mode), formatTemp(shownTarget), formatTemp(acState.current_temp), unit)
 
-    onExpandedChanged: if (expanded) refresh()
+    onExpandedChanged: if (root.expanded) root.refresh()
 
     // ---------- talking to lg-ac-cli ----------
 
